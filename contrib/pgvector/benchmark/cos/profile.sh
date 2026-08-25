@@ -1,29 +1,22 @@
 #!/bin/bash
-# Profile the pgvector IVFFlat query path with perf.
+# Profile the pgvector IVFFlat query path with perf (scenario-parameterized).
 #
-# Two modes:
-#   record (default): sample the DN backend with `perf record`, render a flame
-#                     graph + top-symbols report.
-#   --stat           : run `perf stat` for IPC / cache-miss / branch-miss
-#                     counters (no flame graph).
+# Modes:
+#   record (default): perf record -> flame graph + top-symbols report
+#   --stat           : perf stat for IPC / cache-miss / branch-miss counters
 #
-# Both run a fixed query in a tight loop on the DN backend and attach to it.
+# Uses the scenario's TABLE/OP from env.sh (e.g. sift_base + <->, or lastfm_base + <#>).
 # FlameGraph scripts live in ~/codes/opensource-project/FlameGraph.
 #
 # Usage:
-#   ./09_profile.sh [PROBES] [DURATION_SECONDS]
-#   ./09_profile.sh --stat [PROBES] [DURATION_SECONDS]
-#   ./09_profile.sh 10 30            # record mode: probes=10, sample 30s
-#   ./09_profile.sh --stat 10 20     # stat mode: probes=10, count 20s
+#   ./profile.sh [PROBES] [DURATION_SECONDS]
+#   ./profile.sh --stat [PROBES] [DURATION_SECONDS]
+#   ./profile.sh 10 30            # record: probes=10, 30s
+#   ./profile.sh --stat 10 20     # stat: probes=10, 20s
 #
 # Env overrides: PROBES DURATION QUERY_IDX FREQ REPEATS FGDIR OUTFILE STAT_EVENTS
-#   QUERY_IDX  : which row of queries.csv to use (default 1)
-#   REPEATS    : how many times to run the query (default 10000; just needs to
-#                outlast DURATION — the loop is killed when perf finishes)
-#   FGDIR      : path to the FlameGraph checkout
-#   STAT_EVENTS: perf stat -e event list (default: cycles/instructions/caches)
 set -euo pipefail
-source "$(dirname "$0")/env.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 MODE="record"
 if [ "${1:-}" = "--stat" ]; then
@@ -39,8 +32,8 @@ REPEATS="${REPEATS:-10000}"
 FGDIR="${FGDIR:-$HOME/codes/opensource-project/FlameGraph}"
 STAT_EVENTS="${STAT_EVENTS:-cycles:u,instructions:u,cache-misses:u,cache-references:u,branch-misses:u,branches:u,L1-dcache-loads:u,L1-dcache-load-misses:u}"
 
-QUERIES_CSV="$SIFT_DIR/csv/queries.csv"
-[ -f "$QUERIES_CSV" ] || die "$QUERIES_CSV missing — run 01+02 first"
+QUERIES_CSV="$CSV_DIR/queries.csv"
+[ -f "$QUERIES_CSV" ] || die "$QUERIES_CSV missing — run convert.py first"
 command -v perf >/dev/null || die "perf not installed"
 [ "$MODE" = "stat" ] || [ -x "$FGDIR/stackcollapse-perf.pl" ] || die "FlameGraph scripts not found under $FGDIR"
 
@@ -52,13 +45,13 @@ OUTFILE="${OUTFILE:-$OUTDIR/probes${PROBES}_${DURATION}s}"
 Q=$(sed -n "${QUERY_IDX}p" "$QUERIES_CSV" | cut -f2)
 [ -n "$Q" ] || die "no query at index $QUERY_IDX"
 
-log "building workload (mode=$MODE, probes=$PROBES, query #$QUERY_IDX, $REPEATS repeats)"
+log "building workload (mode=$MODE, table=$TABLE op=$OP, probes=$PROBES, query #$QUERY_IDX, $REPEATS repeats)"
 {
     echo "SELECT pg_backend_pid();"
     echo "SET enable_seqscan = off;"
     echo "SET ivfflat.probes = $PROBES;"
     for i in $(seq 1 "$REPEATS"); do
-        printf "SELECT id FROM sift_base ORDER BY v <-> '%s' LIMIT %d;\n" "$Q" "$TOPK"
+        printf "SELECT id FROM $TABLE ORDER BY v $OP '%s' LIMIT %d;\n" "$Q" "$TOPK"
     done
 } > "$OUTDIR/workload.sql"
 
@@ -120,7 +113,7 @@ if [ "$MODE" != "stat" ]; then
     log "rendering flame graph..."
     perf script -i "$OUTFILE.data" > "$OUTFILE.perf"
     "$FGDIR/stackcollapse-perf.pl" "$OUTFILE.perf" > "$OUTFILE.folded"
-    "$FGDIR/flamegraph.pl" --title "pgvector ivfflat probes=$PROBES (${DURATION}s)" \
+    "$FGDIR/flamegraph.pl" --title "pgvector ivfflat $SCENARIO probes=$PROBES (${DURATION}s)" \
         "$OUTFILE.folded" > "$OUTFILE.svg"
 
     log "generating symbol report..."

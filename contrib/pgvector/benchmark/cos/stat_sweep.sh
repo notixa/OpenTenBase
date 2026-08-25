@@ -1,14 +1,14 @@
 #!/bin/bash
-# Run `perf stat` across a probes sweep and aggregate IPC / cache-miss rates
-# into one table (and a CSV). Wraps 09_profile.sh --stat for each probes value.
+# Run `perf stat` across a probes sweep and aggregate IPC / cache-miss rates.
+# Wraps ./profile.sh --stat for each probes value.
 #
 # Usage:
-#   ./10_stat_sweep.sh [DURATION_SECONDS] [PROBES ...]
-#   ./10_stat_sweep.sh 20 1 5 10 20 50 100     # default probes if omitted
+#   ./stat_sweep.sh [DURATION_SECONDS] [PROBES ...]
+#   ./stat_sweep.sh 20 1 5 10 20 50 100
 #
 # Outputs: results/profile/stat_sweep.csv + per-probes logs (sweep_p<probes>.log)
 set -euo pipefail
-source "$(dirname "$0")/env.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 DURATION="${1:-${DURATION:-20}}"
 shift 2>/dev/null || true
@@ -27,7 +27,7 @@ log "stat sweep: probes=[$PROBES_LIST] duration=${DURATION}s"
 
 for p in $PROBES_LIST; do
     LOG="$OUTDIR/sweep_p${p}.log"
-    if ! bash "$(dirname "$0")/09_profile.sh" --stat "$p" "$DURATION" > "$LOG" 2>&1; then
+    if ! bash "$(dirname "${BASH_SOURCE[0]}")/profile.sh" --stat "$p" "$DURATION" > "$LOG" 2>&1; then
         log "probes=$p FAILED (see $LOG)"
         echo "$p,,,,failed" >> "$SUMMARY"
         continue

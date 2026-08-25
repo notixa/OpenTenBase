@@ -1,8 +1,8 @@
 #!/bin/bash
-# Download SIFT1M (1M x 128-d SIFT vectors + 10k queries + ground truth)
+# Download & extract SIFT1M (1M x 128-d SIFT vectors + 10k queries + ground truth).
 # Source: ANN search test corpus (texmex / IRISA), used by ann-benchmarks.
 set -euo pipefail
-source "$(dirname "$0")/env.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 TARBALL="$SIFT_DIR/sift.tar.gz"
 
