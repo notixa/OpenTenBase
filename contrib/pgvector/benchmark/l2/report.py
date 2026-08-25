@@ -33,7 +33,7 @@ def parse_raw(path, topk, nq):
         line = line.strip()
         m = TIME_RE.match(line)
         if m:
-            if len(cur_ids) == topk:
+            if cur_ids:  # accept variable result count (ivfflat+inner-product can return < topk)
                 queries.append((cur_ids, float(m.group(1))))
             cur_ids = []
             continue
@@ -49,10 +49,10 @@ def stats(times):
     ts = sorted(times)
     n = len(ts)
     return {
-        "mean_ms": statistics.mean(ts),
-        "p50_ms": ts[int(n * 0.50) - 1 if n >= 2 else 0],
-        "p95_ms": ts[min(n - 1, int(n * 0.95))],
-        "p99_ms": ts[min(n - 1, int(n * 0.99))],
+        "mean_ms": round(statistics.mean(ts), 3),
+        "p50_ms": round(ts[int(n * 0.50) - 1 if n >= 2 else 0], 3),
+        "p95_ms": round(ts[min(n - 1, int(n * 0.95))], 3),
+        "p99_ms": round(ts[min(n - 1, int(n * 0.99))], 3),
     }
 
 
@@ -81,7 +81,7 @@ def main():
         s.update({
             "setting": name,
             "lists": args.lists,
-            "recall": round(recall, 4),
+            "recall@K": round(recall, 4),
             "qps": round(1000.0 / s["mean_ms"], 1),
         })
         rows.append(s)
@@ -89,7 +89,8 @@ def main():
     if not rows:
         raise SystemExit("no raw_*.txt files found")
 
-    cols = ["setting", "lists", "recall", "mean_ms", "p50_ms", "p95_ms", "p99_ms", "qps"]
+    # headline metrics first: Recall@K, P50, P95, QPS
+    cols = ["setting", "recall@K", "p50_ms", "p95_ms", "qps", "mean_ms", "p99_ms", "lists"]
     out_csv = os.path.join(args.results_dir, "summary.csv")
     with open(out_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)

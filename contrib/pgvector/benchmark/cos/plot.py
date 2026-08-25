@@ -63,7 +63,7 @@ def main():
     for gi, (lists, pts) in enumerate(sorted(groups.items())):
         color = cmap(gi % 10)
         probes = [p for p, _ in pts]
-        recall = [float(r["recall"]) for _, r in pts]
+        recall = [float(r["recall@K"]) for _, r in pts]
         mean_ms = [float(r["mean_ms"]) for _, r in pts]
         label = f"ivfflat lists={lists}"
 
@@ -78,7 +78,7 @@ def main():
                  label=f"mean latency ms (lists={lists})")
 
     if seq is not None:
-        ax1.scatter([float(seq["mean_ms"])], [float(seq["recall"])],
+        ax1.scatter([float(seq["mean_ms"])], [float(seq["recall@K"])],
                     marker="*", s=220, color="red", zorder=5,
                     label=f"exact seq scan ({float(seq['mean_ms']):.0f} ms)")
 

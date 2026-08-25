@@ -41,18 +41,17 @@ OUTDIR="$BENCH_DIR/results/profile"
 mkdir -p "$OUTDIR"
 OUTFILE="${OUTFILE:-$OUTDIR/probes${PROBES}_${DURATION}s}"
 
-# ---- 1. build the workload: pid + fixed query repeated ----
+# ---- 1. build the workload: pid + fixed query, then \watch to loop until killed ----
 Q=$(sed -n "${QUERY_IDX}p" "$QUERIES_CSV" | cut -f2)
 [ -n "$Q" ] || die "no query at index $QUERY_IDX"
 
-log "building workload (mode=$MODE, table=$TABLE op=$OP, probes=$PROBES, query #$QUERY_IDX, $REPEATS repeats)"
+log "building workload (mode=$MODE, table=$TABLE op=$OP, probes=$PROBES, query #$QUERY_IDX, \\watch loop)"
 {
     echo "SELECT pg_backend_pid();"
     echo "SET enable_seqscan = off;"
     echo "SET ivfflat.probes = $PROBES;"
-    for i in $(seq 1 "$REPEATS"); do
-        printf "SELECT id FROM $TABLE ORDER BY v $OP '%s' LIMIT %d;\n" "$Q" "$TOPK"
-    done
+    echo "SELECT id FROM $TABLE ORDER BY v $OP '$Q' LIMIT $TOPK;"
+    echo '\watch 0.001'
 } > "$OUTDIR/workload.sql"
 
 # ---- 2. launch workload in background, capture backend pid ----

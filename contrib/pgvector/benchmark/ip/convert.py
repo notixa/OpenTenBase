@@ -13,7 +13,10 @@ Requires: h5py, numpy.
 """
 import sys
 
-import h5py
+try:
+    import h5py
+except ImportError:
+    sys.exit("convert.py requires h5py — install it with:  pip install h5py")
 import numpy as np
 
 
