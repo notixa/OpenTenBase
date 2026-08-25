@@ -63,7 +63,7 @@ log "building workload (mode=$MODE, probes=$PROBES, query #$QUERY_IDX, $REPEATS 
 } > "$OUTDIR/workload.sql"
 
 # ---- 2. launch workload in background, capture backend pid ----
-log "launching workload on DN ($PGPORT)..."
+log "launching workload on port $PGPORT..."
 psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -A -t \
     -f "$OUTDIR/workload.sql" > "$OUTDIR/workload.out" 2>"$OUTDIR/workload.err" &
 WPID=$!
