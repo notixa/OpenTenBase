@@ -24,6 +24,7 @@
 int			ivfflat_probes;
 int			ivfflat_iterative_scan;
 int			ivfflat_max_probes;
+int			ivfflat_top_k;
 static relopt_kind ivfflat_relopt_kind;
 
 static const struct config_enum_entry ivfflat_iterative_scan_options[] = {
@@ -54,6 +55,10 @@ IvfflatInit(void)
 	DefineCustomIntVariable("ivfflat.max_probes", "Sets the max number of probes for iterative scans",
 							NULL, &ivfflat_max_probes,
 							IVFFLAT_MAX_LISTS, IVFFLAT_MIN_LISTS, IVFFLAT_MAX_LISTS, PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomIntVariable("ivfflat.top_k", "Sets the bounded heap size for top-k retrieval",
+							"0 disables bounded heap.", &ivfflat_top_k,
+							0, 0, INT_MAX, PGC_USERSET, 0, NULL, NULL, NULL);
 
 	MarkGUCPrefixReserved("ivfflat");
 }

@@ -110,6 +110,7 @@ typedef Pointer Item;
 extern int	ivfflat_probes;
 extern int	ivfflat_iterative_scan;
 extern int	ivfflat_max_probes;
+extern int	ivfflat_top_k;
 
 typedef enum IvfflatIterativeScanMode
 {
@@ -311,6 +312,14 @@ typedef struct IvfflatScanOpaqueData
 	BlockNumber *listPages;
 	int			listIndex;
 	IvfflatScanList *lists;
+
+	/* Top-K Heap */
+	bool		use_heap;
+	int			heap_max_size;
+	int			heap_cur_size;
+	int			heap_returned_idx;
+	double	   *heap_distances;
+	ItemPointerData *heap_tids;
 }			IvfflatScanOpaqueData;
 
 typedef IvfflatScanOpaqueData * IvfflatScanOpaque;

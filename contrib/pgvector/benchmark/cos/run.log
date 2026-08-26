@@ -1,0 +1,70 @@
+[cos] === cos scenario full run ===
+[cos] postgres ready on 5432
+[cos] dataset already present: /home/notixa/otb_bench/cos/glove-100-angular.hdf5
+NOTICE:  extension "vector" already exists, skipping
+CREATE EXTENSION
+DROP TABLE
+CREATE TABLE
+[cos] loading into glove_base ...
+COPY 1183514
+
+real	0m9.706s
+user	0m0.132s
+sys	0m0.659s
+ANALYZE
+[cos] rows: 1183514
+[cos] building ivfflat index (vector_cosine_ops), lists=1000 ...
+SET
+Timing is on.
+CREATE INDEX
+Time: 13893.799 ms (00:13.894)
+[cos] running exact seq-scan reference ...
+[cos] running ivfflat probes=1 ...
+[cos] running ivfflat probes=2 ...
+[cos] running ivfflat probes=5 ...
+[cos] running ivfflat probes=10 ...
+[cos] running ivfflat probes=20 ...
+[cos] running ivfflat probes=40 ...
+[cos] running ivfflat probes=60 ...
+[cos] running ivfflat probes=80 ...
+[cos] running ivfflat probes=100 ...
+[cos] running ivfflat probes=200 ...
+[cos] running ivfflat probes=400 ...
+[cos] running ivfflat probes=1000 ...
+[cos] generating report...
+setting     | recall@K | p50_ms | p95_ms | qps   | mean_ms | p99_ms | lists
+------------|----------|--------|--------|-------|---------|--------|------
+l1000_p1    | 0.41     | 0.39   | 0.912  | 2262  | 0.442   | 1.963  | 1000 
+l1000_p10   | 0.757    | 2.87   | 5.047  | 330.8 | 3.023   | 5.697  | 1000 
+l1000_p100  | 0.95     | 31.71  | 40.31  | 31.3  | 31.99   | 42.8   | 1000 
+l1000_p1000 | 1        | 278.8  | 287.8  | 3.6   | 279.7   | 299.3  | 1000 
+l1000_p2    | 0.53     | 0.702  | 1.367  | 1276  | 0.784   | 3.541  | 1000 
+l1000_p20   | 0.841    | 5.547  | 8.378  | 176.1 | 5.678   | 9.04   | 1000 
+l1000_p200  | 0.982    | 57.16  | 68.94  | 17.5  | 57.05   | 76.86  | 1000 
+l1000_p40   | 0.887    | 11.11  | 17.09  | 87    | 11.49   | 18.64  | 1000 
+l1000_p400  | 0.994    | 99.56  | 110.9  | 10.1  | 98.68   | 117.6  | 1000 
+l1000_p5    | 0.675    | 1.578  | 3.094  | 575.7 | 1.737   | 4.523  | 1000 
+l1000_p60   | 0.919    | 20.94  | 27.73  | 48.8  | 20.49   | 30.5   | 1000 
+l1000_p80   | 0.938    | 27.15  | 33.99  | 37.3  | 26.78   | 40.84  | 1000 
+seq         | 1        | 53.01  | 57.78  | 18.8  | 53.12   | 60.4   | 1000 
+
+wrote /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/cos/results/summary.csv
+wrote /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/cos/results/baseline_curve.png
+[cos] done. results in /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/cos/results/summary.csv
+[cos] stat sweep: probes=[1 5 10 20 50 100] duration=5s -> /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/cos/results/stat_sweep.csv
+  probes=1    IPC=1.634 LLCmiss=3.85% brmiss=2.47% L1miss=2.02%
+  probes=5    IPC=1.646 LLCmiss=18.34% brmiss=2.01% L1miss=1.43%
+  probes=10   IPC=1.502 LLCmiss=34.97% brmiss=2.06% L1miss=1.41%
+  probes=20   IPC=1.307 LLCmiss=71.54% brmiss=2.06% L1miss=1.27%
+  probes=50   IPC=1.360 LLCmiss=68.92% brmiss=2.10% L1miss=1.26%
+  probes=100  IPC=1.496 LLCmiss=58.63% brmiss=2.85% L1miss=1.06%
+
+=== summary table (also in /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/cos/results/stat_sweep.csv) ===
+probes   IPC      LLCmiss%   brmiss%    L1miss%   
+1        1.634    3.85       2.47       2.02      
+5        1.646    18.34      2.01       1.43      
+10       1.502    34.97      2.06       1.41      
+20       1.307    71.54      2.06       1.27      
+50       1.360    68.92      2.10       1.26      
+100      1.496    58.63      2.85       1.06      
+[cos] done

@@ -1,13 +1,13 @@
 #!/bin/bash
-# IP (Last.fm inner product) one-shot full run:
-#   setup -> download -> convert -> load -> index -> baseline -> perf stat sweep.
-#   ./run.sh              # full pipeline
-#   NQUERIES=100 ./run.sh # use 100 queries
-#   STAT_DURATION=20 ./run.sh   # perf stat sweep duration (default 10s)
+# Optimized Top-K run
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
-log "=== $SCENARIO scenario full run ==="
+export IVFFLAT_TOP_K=$TOPK
+export RESDIR="$BENCH_DIR/results_scan_opt"
+mkdir -p "$RESDIR"
+
+log "=== $SCENARIO scenario OPTIMIZED run (TOPK=$IVFFLAT_TOP_K) ==="
 bash "$(dirname "${BASH_SOURCE[0]}")/setup.sh"
 bash "$(dirname "${BASH_SOURCE[0]}")/download.sh"
 [ -f "$CSV_DIR/base.csv" ] || python3 "$(dirname "${BASH_SOURCE[0]}")/convert.py" "$DATASET_SRC" "$CSV_DIR" "$NQUERIES"

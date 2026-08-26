@@ -19,7 +19,7 @@ else
     PROBES_LIST="${STAT_PROBES:-1 5 10 20 50 100}"
 fi
 
-OUTDIR="$BENCH_DIR/results/profile"
+OUTDIR="$RESDIR/profile"
 mkdir -p "$OUTDIR"
 SUMMARY="$RESDIR/stat_sweep.csv"
 echo "probes,IPC,LLCmiss%,brmiss%,L1miss%" > "$SUMMARY"

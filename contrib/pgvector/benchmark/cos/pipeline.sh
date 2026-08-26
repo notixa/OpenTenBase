@@ -63,7 +63,7 @@ for P in $PROBES_SWEEP; do
     {
         echo '\timing on'
         echo 'SET enable_seqscan = off;'
-        echo "SET ivfflat.probes = $P;"
+        echo "SET ivfflat.probes = $P;"; [ -n "${IVFFLAT_TOP_K:-}" ] && echo "SET ivfflat.top_k = $IVFFLAT_TOP_K;"
         cat "$RESDIR/gen.queries.sql"
     } > "$RESDIR/gen.ivf.sql"
     run_sql "$RESDIR/gen.ivf.sql" "$RESDIR/raw_l${LISTS}_p${P}.txt"

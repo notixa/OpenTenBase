@@ -1,0 +1,70 @@
+[ip] === ip scenario full run ===
+[ip] postgres ready on 5432
+[ip] dataset already present: /home/notixa/otb_bench/ip/lastfm-64-dot.hdf5
+NOTICE:  extension "vector" already exists, skipping
+CREATE EXTENSION
+DROP TABLE
+CREATE TABLE
+[ip] loading into lastfm_base ...
+COPY 292385
+
+real	0m1.747s
+user	0m0.029s
+sys	0m0.151s
+ANALYZE
+[ip] rows: 292385
+[ip] building ivfflat index (vector_ip_ops), lists=1000 ...
+SET
+Timing is on.
+CREATE INDEX
+Time: 7036.816 ms (00:07.037)
+[ip] running exact seq-scan reference ...
+[ip] running ivfflat probes=1 ...
+[ip] running ivfflat probes=2 ...
+[ip] running ivfflat probes=5 ...
+[ip] running ivfflat probes=10 ...
+[ip] running ivfflat probes=20 ...
+[ip] running ivfflat probes=40 ...
+[ip] running ivfflat probes=60 ...
+[ip] running ivfflat probes=80 ...
+[ip] running ivfflat probes=100 ...
+[ip] running ivfflat probes=200 ...
+[ip] running ivfflat probes=400 ...
+[ip] running ivfflat probes=1000 ...
+[ip] generating report...
+setting     | recall@K | p50_ms | p95_ms | qps       | mean_ms | p99_ms | lists
+------------|----------|--------|--------|-----------|---------|--------|------
+l1000_p1    | 0.25     | 0.064  | 0.224  | 9009      | 0.111   | 1.423  | 1000 
+l1000_p10   | 0.765    | 0.121  | 0.426  | 5780      | 0.173   | 1.682  | 1000 
+l1000_p100  | 0.991    | 0.696  | 1.535  | 1226      | 0.816   | 3.277  | 1000 
+l1000_p1000 | 1        | 49.63  | 53.48  | 19.9      | 50.26   | 58.23  | 1000 
+l1000_p2    | 0.403    | 0.067  | 0.109  | 1.266e+04 | 0.079   | 1.049  | 1000 
+l1000_p20   | 0.881    | 0.199  | 0.658  | 3650      | 0.274   | 1.7    | 1000 
+l1000_p200  | 0.998    | 1.871  | 3.615  | 488       | 2.049   | 5.413  | 1000 
+l1000_p40   | 0.971    | 0.444  | 0.961  | 2012      | 0.497   | 1.945  | 1000 
+l1000_p400  | 0.999    | 6.83   | 10.38  | 142.7     | 7.008   | 12.88  | 1000 
+l1000_p5    | 0.635    | 0.088  | 0.347  | 7812      | 0.128   | 1.012  | 1000 
+l1000_p60   | 0.982    | 0.488  | 1.184  | 1789      | 0.559   | 1.801  | 1000 
+l1000_p80   | 0.987    | 0.596  | 1.252  | 1435      | 0.697   | 2.234  | 1000 
+seq         | 1        | 14.56  | 18.37  | 67.6      | 14.8    | 19.84  | 1000 
+
+wrote /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/ip/results/summary.csv
+wrote /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/ip/results/baseline_curve.png
+[ip] done. results in /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/ip/results/summary.csv
+[ip] stat sweep: probes=[1 5 10 20 50 100] duration=5s -> /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/ip/results/stat_sweep.csv
+  probes=1    IPC=1.256 LLCmiss=2.77% brmiss=3.55% L1miss=2.56%
+  probes=5    IPC=1.531 LLCmiss=2.76% brmiss=2.65% L1miss=2.02%
+  probes=10   IPC=1.102 LLCmiss=7.28% brmiss=3.38% L1miss=2.52%
+  probes=20   IPC=1.303 LLCmiss=9.71% brmiss=2.98% L1miss=1.92%
+  probes=50   IPC=1.590 LLCmiss=9.70% brmiss=2.50% L1miss=1.33%
+  probes=100  IPC=1.685 LLCmiss=11.09% brmiss=2.25% L1miss=1.18%
+
+=== summary table (also in /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/ip/results/stat_sweep.csv) ===
+probes   IPC      LLCmiss%   brmiss%    L1miss%   
+1        1.256    2.77       3.55       2.56      
+5        1.531    2.76       2.65       2.02      
+10       1.102    7.28       3.38       2.52      
+20       1.303    9.71       2.98       1.92      
+50       1.590    9.70       2.50       1.33      
+100      1.685    11.09      2.25       1.18      
+[ip] done

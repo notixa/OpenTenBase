@@ -1,1 +1,11 @@
-results/
+cos/results/
+ip/results/
+l2/results/
+
+cos/results_scan_opt/
+ip/results_scan_opt/
+l2/results_scan_opt/
+
+cos/*.log/
+ip/*.log/
+l2/*.log/

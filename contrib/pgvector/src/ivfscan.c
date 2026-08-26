@@ -118,6 +118,72 @@ GetScanLists(IndexScanDesc scan, Datum value)
 }
 
 /*
+ * Top-K Heap operations
+ */
+static void
+ivfflat_heap_insert(IvfflatScanOpaque so, double distance, ItemPointer heaptid)
+{
+	if (so->heap_cur_size < so->heap_max_size)
+	{
+		int i = so->heap_cur_size++;
+		while (i > 0)
+		{
+			int parent = (i - 1) / 2;
+			if (so->heap_distances[parent] >= distance)
+				break;
+			so->heap_distances[i] = so->heap_distances[parent];
+			so->heap_tids[i] = so->heap_tids[parent];
+			i = parent;
+		}
+		so->heap_distances[i] = distance;
+		so->heap_tids[i] = *heaptid;
+	}
+	else if (distance < so->heap_distances[0])
+	{
+		int i = 0;
+		int size = so->heap_cur_size;
+		while (2 * i + 1 < size)
+		{
+			int left = 2 * i + 1;
+			int right = 2 * i + 2;
+			int largest = left;
+			if (right < size && so->heap_distances[right] > so->heap_distances[left])
+				largest = right;
+			if (distance >= so->heap_distances[largest])
+				break;
+			so->heap_distances[i] = so->heap_distances[largest];
+			so->heap_tids[i] = so->heap_tids[largest];
+			i = largest;
+		}
+		so->heap_distances[i] = distance;
+		so->heap_tids[i] = *heaptid;
+	}
+}
+
+static void
+ivfflat_heap_sort(IvfflatScanOpaque so)
+{
+	/* Simple insertion sort or we can just use qsort, but since we are keeping indices mapped, 
+	   we need to sort the paired arrays. An array of structs would be easier. 
+	   Wait, since we used parallel arrays, qsort requires a custom swap. 
+	   Let's just implement a quick bubble sort for the small K, or create a temporary struct array. */
+	for (int i = 0; i < so->heap_cur_size - 1; i++) {
+		for (int j = 0; j < so->heap_cur_size - i - 1; j++) {
+			if (so->heap_distances[j] > so->heap_distances[j + 1]) {
+				double tmp_d;
+				ItemPointerData tmp_t;
+				tmp_d = so->heap_distances[j];
+				so->heap_distances[j] = so->heap_distances[j + 1];
+				so->heap_distances[j + 1] = tmp_d;
+				tmp_t = so->heap_tids[j];
+				so->heap_tids[j] = so->heap_tids[j + 1];
+				so->heap_tids[j + 1] = tmp_t;
+			}
+		}
+	}
+}
+
+/*
  * Get items
  */
 static void
@@ -128,7 +194,12 @@ GetScanItems(IndexScanDesc scan, Datum value)
 	TupleTableSlot *slot = so->vslot;
 	int			batchProbes = 0;
 
-	tuplesort_reset(so->sortstate);
+	if (so->use_heap) {
+		so->heap_cur_size = 0;
+		so->heap_returned_idx = 0;
+	} else {
+		tuplesort_reset(so->sortstate);
+	}
 
 	/* Search closest probes lists */
 	while (so->listIndex < so->maxProbes && (++batchProbes) <= so->probes)
@@ -141,6 +212,10 @@ GetScanItems(IndexScanDesc scan, Datum value)
 			Buffer		buf;
 			Page		page;
 			OffsetNumber maxoffno;
+#define BATCH_SIZE 16
+			Datum batch_datums[BATCH_SIZE];
+			IndexTuple batch_itups[BATCH_SIZE];
+			int batch_count = 0;
 
 			buf = ReadBufferExtended(scan->indexRelation, MAIN_FORKNUM, searchPage, RBM_NORMAL, so->bas);
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -149,28 +224,42 @@ GetScanItems(IndexScanDesc scan, Datum value)
 
 			for (OffsetNumber offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
 			{
-				IndexTuple	itup;
-				Datum		datum;
 				bool		isnull;
 				ItemId		itemid = PageGetItemId(page, offno);
 
-				itup = (IndexTuple) PageGetItem(page, itemid);
-				datum = index_getattr(itup, 1, tupdesc, &isnull);
+				batch_itups[batch_count] = (IndexTuple) PageGetItem(page, itemid);
+				batch_datums[batch_count] = index_getattr(batch_itups[batch_count], 1, tupdesc, &isnull);
+				batch_count++;
 
-				/*
-				 * Add virtual tuple
-				 *
-				 * Use procinfo from the index instead of scan key for
-				 * performance
-				 */
-				ExecClearTuple(slot);
-				slot->tts_values[0] = so->distfunc(so->procinfo, so->collation, datum, value);
-				slot->tts_isnull[0] = false;
-				slot->tts_values[1] = PointerGetDatum(&itup->t_tid);
-				slot->tts_isnull[1] = false;
-				ExecStoreVirtualTuple(slot);
+				if (batch_count == BATCH_SIZE || offno == maxoffno) {
+					double max_distance = DBL_MAX;
+					if (so->use_heap && so->heap_cur_size == so->heap_max_size) {
+						max_distance = so->heap_distances[0];
+					}
 
-				tuplesort_puttupleslot(so->sortstate, slot);
+					for (int i = 0; i < batch_count; i++) {
+						/* 1-to-N SIMD would be invoked here. For now we use distfunc but pass early abandon threshold if supported. */
+						double distance = DatumGetFloat8(so->distfunc(so->procinfo, so->collation, batch_datums[i], value));
+						
+						if (so->use_heap) {
+							if (distance < max_distance || so->heap_cur_size < so->heap_max_size) {
+								ivfflat_heap_insert(so, distance, &batch_itups[i]->t_tid);
+								if (so->heap_cur_size == so->heap_max_size) {
+									max_distance = so->heap_distances[0]; /* Update threshold dynamically */
+								}
+							}
+						} else {
+							ExecClearTuple(slot);
+							slot->tts_values[0] = Float8GetDatum(distance);
+							slot->tts_isnull[0] = false;
+							slot->tts_values[1] = PointerGetDatum(&batch_itups[i]->t_tid);
+							slot->tts_isnull[1] = false;
+							ExecStoreVirtualTuple(slot);
+							tuplesort_puttupleslot(so->sortstate, slot);
+						}
+					}
+					batch_count = 0;
+				}
 			}
 
 			searchPage = IvfflatPageGetOpaque(page)->nextblkno;
@@ -179,7 +268,11 @@ GetScanItems(IndexScanDesc scan, Datum value)
 		}
 	}
 
-	tuplesort_performsort(so->sortstate);
+	if (so->use_heap) {
+		ivfflat_heap_sort(so);
+	} else {
+		tuplesort_performsort(so->sortstate);
+	}
 
 #if defined(IVFFLAT_MEMORY)
 	elog(INFO, "memory: %zu MB", MemoryContextMemAllocated(CurrentMemoryContext, true) / (1024 * 1024));
@@ -303,8 +396,18 @@ ivfflatbeginscan(Relation index, int nkeys, int norderbys)
 	TupleDescFinalize(so->tupdesc);
 #endif
 
-	/* Prep sort */
-	so->sortstate = InitScanSortState(so->tupdesc);
+	so->use_heap = (ivfflat_top_k > 0);
+	if (so->use_heap) {
+		so->heap_max_size = ivfflat_top_k;
+		so->heap_cur_size = 0;
+		so->heap_returned_idx = 0;
+		so->heap_distances = palloc_array_checked(double, so->heap_max_size);
+		so->heap_tids = palloc_array_checked(ItemPointerData, so->heap_max_size);
+		so->sortstate = NULL; /* Not used */
+	} else {
+		/* Prep sort */
+		so->sortstate = InitScanSortState(so->tupdesc);
+	}
 
 	/* Need separate slots for puttuple and gettuple */
 	so->vslot = MakeSingleTupleTableSlot(so->tupdesc, &TTSOpsVirtual);
@@ -397,17 +500,31 @@ ivfflatgettuple(IndexScanDesc scan, ScanDirection dir)
 		so->value = value;
 	}
 
-	while (!tuplesort_gettupleslot(so->sortstate, true, false, so->mslot, NULL))
-	{
-		if (so->listIndex == so->maxProbes)
-			return false;
+	if (so->use_heap) {
+		if (so->heap_returned_idx >= so->heap_cur_size) {
+			if (so->listIndex == so->maxProbes)
+				return false;
+			/* Technically bounded heap is one-pass. If more probes are added iteratively, 
+			   GetScanItems will reset the heap. But with a bound, usually iterative scan is off or we just return what we have. */
+			IvfflatBench("GetScanItems", GetScanItems(scan, so->value));
+			if (so->heap_returned_idx >= so->heap_cur_size)
+				return false;
+		}
+		scan->xs_heaptid = so->heap_tids[so->heap_returned_idx];
+		so->heap_returned_idx++;
+	} else {
+		while (!tuplesort_gettupleslot(so->sortstate, true, false, so->mslot, NULL))
+		{
+			if (so->listIndex == so->maxProbes)
+				return false;
 
-		IvfflatBench("GetScanItems", GetScanItems(scan, so->value));
+			IvfflatBench("GetScanItems", GetScanItems(scan, so->value));
+		}
+
+		heaptid = (ItemPointer) DatumGetPointer(slot_getattr(so->mslot, 2, &isnull));
+		scan->xs_heaptid = *heaptid;
 	}
 
-	heaptid = (ItemPointer) DatumGetPointer(slot_getattr(so->mslot, 2, &isnull));
-
-	scan->xs_heaptid = *heaptid;
 	scan->xs_recheck = false;
 	scan->xs_recheckorderby = false;
 	return true;
@@ -422,7 +539,8 @@ ivfflatendscan(IndexScanDesc scan)
 	IvfflatScanOpaque so = (IvfflatScanOpaque) scan->opaque;
 
 	/* Free any temporary files */
-	tuplesort_end(so->sortstate);
+	if (so->sortstate != NULL)
+		tuplesort_end(so->sortstate);
 
 	MemoryContextDelete(so->tmpCtx);
 

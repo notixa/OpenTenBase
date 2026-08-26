@@ -37,7 +37,7 @@ QUERIES_CSV="$CSV_DIR/queries.csv"
 command -v perf >/dev/null || die "perf not installed"
 [ "$MODE" = "stat" ] || [ -x "$FGDIR/stackcollapse-perf.pl" ] || die "FlameGraph scripts not found under $FGDIR"
 
-OUTDIR="$BENCH_DIR/results/profile"
+OUTDIR="$RESDIR/profile"
 mkdir -p "$OUTDIR"
 OUTFILE="${OUTFILE:-$OUTDIR/probes${PROBES}_${DURATION}s}"
 
@@ -49,7 +49,7 @@ log "building workload (mode=$MODE, table=$TABLE op=$OP, probes=$PROBES, query #
 {
     echo "SELECT pg_backend_pid();"
     echo "SET enable_seqscan = off;"
-    echo "SET ivfflat.probes = $PROBES;"
+    echo "SET ivfflat.probes = $PROBES;"; [ -n "${IVFFLAT_TOP_K:-}" ] && echo "SET ivfflat.top_k = $IVFFLAT_TOP_K;"
     echo "SELECT id FROM $TABLE ORDER BY v $OP '$Q' LIMIT $TOPK;"
     echo '\watch 0.001'
 } > "$OUTDIR/workload.sql"

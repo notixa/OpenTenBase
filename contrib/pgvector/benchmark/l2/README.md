@@ -8,10 +8,12 @@
 ## 一键运行
 
 ```bash
-./run.sh              # setup → download → convert → load → index → baseline → report → plot
+./run.sh              # 运行原生 tuplesort 基线测试
+./run_opt.sh          # 运行 Top-K 堆 + 1-to-N 批处理优化测试
 ```
 
-结果输出到本目录 `results/`（`summary.csv` + `baseline_curve.png`）。
+原生基线结果输出到 `results/` 目录下（包含 `summary.csv` 与 `baseline_curve.png` 等）。
+优化测试结果将输出到 `results_scan_opt/` 目录下。
 
 ## 分步运行
 

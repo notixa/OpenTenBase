@@ -1,0 +1,70 @@
+[l2] === l2 scenario OPTIMIZED run (TOPK=10) ===
+[l2] postgres ready on 5432
+[l2] SIFT1M already present in /home/notixa/otb_bench/l2/sift
+NOTICE:  extension "vector" already exists, skipping
+CREATE EXTENSION
+DROP TABLE
+CREATE TABLE
+[l2] loading into sift_base ...
+COPY 1000000
+
+real	0m4.986s
+user	0m0.042s
+sys	0m0.199s
+ANALYZE
+[l2] rows: 1000000
+[l2] building ivfflat index (vector_l2_ops), lists=1000 ...
+SET
+Timing is on.
+CREATE INDEX
+Time: 12442.210 ms (00:12.442)
+[l2] running exact seq-scan reference ...
+[l2] running ivfflat probes=1 ...
+[l2] running ivfflat probes=2 ...
+[l2] running ivfflat probes=5 ...
+[l2] running ivfflat probes=10 ...
+[l2] running ivfflat probes=20 ...
+[l2] running ivfflat probes=40 ...
+[l2] running ivfflat probes=60 ...
+[l2] running ivfflat probes=80 ...
+[l2] running ivfflat probes=100 ...
+[l2] running ivfflat probes=200 ...
+[l2] running ivfflat probes=400 ...
+[l2] running ivfflat probes=1000 ...
+[l2] generating report...
+setting     | recall@K | p50_ms | p95_ms | qps   | mean_ms | p99_ms | lists
+------------|----------|--------|--------|-------|---------|--------|------
+l1000_p1    | 0.38     | 0.164  | 0.35   | 5155  | 0.194   | 1      | 1000 
+l1000_p10   | 0.877    | 0.957  | 1.696  | 990.1 | 1.01    | 2.794  | 1000 
+l1000_p100  | 0.997    | 7.315  | 10.11  | 134.4 | 7.443   | 11.48  | 1000 
+l1000_p1000 | 0.998    | 61.51  | 70.01  | 16    | 62.43   | 80.27  | 1000 
+l1000_p2    | 0.551    | 0.281  | 0.574  | 2967  | 0.337   | 1.635  | 1000 
+l1000_p20   | 0.957    | 1.802  | 2.771  | 532.2 | 1.879   | 4.363  | 1000 
+l1000_p200  | 0.998    | 13.96  | 17.77  | 70.5  | 14.19   | 23     | 1000 
+l1000_p40   | 0.986    | 2.864  | 4.241  | 335.9 | 2.977   | 7.514  | 1000 
+l1000_p400  | 0.998    | 25.64  | 31.84  | 38    | 26.31   | 50.33  | 1000 
+l1000_p5    | 0.755    | 0.518  | 0.998  | 1698  | 0.589   | 2.055  | 1000 
+l1000_p60   | 0.992    | 4.098  | 5.916  | 234.9 | 4.258   | 7.22   | 1000 
+l1000_p80   | 0.996    | 5.293  | 8.083  | 184.2 | 5.429   | 11.2   | 1000 
+seq         | 0.998    | 53.75  | 69.89  | 18    | 55.5    | 74.28  | 1000 
+
+wrote /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/l2/results_scan_opt/summary.csv
+wrote /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/l2/results_scan_opt/baseline_curve.png
+[l2] done. results in /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/l2/results_scan_opt/summary.csv
+[l2] stat sweep: probes=[1 5 10 20 50 100] duration=5s -> /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/l2/results/stat_sweep.csv
+  probes=1    IPC=1.273 LLCmiss=7.72% brmiss=2.18% L1miss=4.21%
+  probes=5    IPC=1.808 LLCmiss=1.36% brmiss=1.16% L1miss=4.62%
+  probes=10   IPC=1.917 LLCmiss=3.96% brmiss=0.63% L1miss=5.26%
+  probes=20   IPC=1.887 LLCmiss=6.27% brmiss=0.52% L1miss=5.30%
+  probes=50   IPC=1.155 LLCmiss=40.66% brmiss=0.39% L1miss=4.62%
+  probes=100  IPC=0.896 LLCmiss=74.48% brmiss=0.40% L1miss=4.18%
+
+=== summary table (also in /home/notixa/codes/opensource-project/OpenTenBase/contrib/pgvector/benchmark/l2/results/stat_sweep.csv) ===
+probes   IPC      LLCmiss%   brmiss%    L1miss%   
+1        1.273    7.72       2.18       4.21      
+5        1.808    1.36       1.16       4.62      
+10       1.917    3.96       0.63       5.26      
+20       1.887    6.27       0.52       5.30      
+50       1.155    40.66      0.39       4.62      
+100      0.896    74.48      0.40       4.18      
+[l2] done
