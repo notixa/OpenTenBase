@@ -22,6 +22,10 @@
 #include "utils/varbit.h"
 #include "vector.h"
 
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
+
 #if PG_VERSION_NUM >= 160000
 #include "varatt.h"
 #endif
@@ -557,8 +561,143 @@ halfvec_to_vector(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(result);
 }
 
-VECTOR_TARGET_CLONES static float
-VectorL2SquaredDistance(int dim, float *ax, float *bx)
+/*
+ * L2 squared distance kernels. Runtime dispatch:
+ *   x86: AVX512F -> AVX2+FMA -> SSE2 -> scalar (auto-vectorized)
+ *   non-x86: scalar (auto-vectorized)
+ */
+#if defined(__x86_64__) || defined(__i386__)
+static float __attribute__((target("avx512f,avx512dq")))
+VectorL2SquaredDistance_avx512f(int dim, float *ax, float *bx)
+{
+	float		distance = 0.0;
+	int			i = 0;
+	__m512		a0 = _mm512_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+
+	for (; i + 63 < dim; i += 64)
+	{
+		__m512		d0 = _mm512_sub_ps(_mm512_loadu_ps(ax + i), _mm512_loadu_ps(bx + i));
+		__m512		d1 = _mm512_sub_ps(_mm512_loadu_ps(ax + i + 16), _mm512_loadu_ps(bx + i + 16));
+		__m512		d2 = _mm512_sub_ps(_mm512_loadu_ps(ax + i + 32), _mm512_loadu_ps(bx + i + 32));
+		__m512		d3 = _mm512_sub_ps(_mm512_loadu_ps(ax + i + 48), _mm512_loadu_ps(bx + i + 48));
+
+		a0 = _mm512_fmadd_ps(d0, d0, a0);
+		a1 = _mm512_fmadd_ps(d1, d1, a1);
+		a2 = _mm512_fmadd_ps(d2, d2, a2);
+		a3 = _mm512_fmadd_ps(d3, d3, a3);
+	}
+	for (; i + 15 < dim; i += 16)
+	{
+		__m512		d = _mm512_sub_ps(_mm512_loadu_ps(ax + i), _mm512_loadu_ps(bx + i));
+
+		a0 = _mm512_fmadd_ps(d, d, a0);
+	}
+	for (; i < dim; i++)
+	{
+		float		d = ax[i] - bx[i];
+
+		distance += d * d;
+	}
+
+	__m512		acc = _mm512_add_ps(_mm512_add_ps(a0, a1), _mm512_add_ps(a2, a3));
+	__m256		lo = _mm512_castps512_ps256(acc);
+	__m256		hi = _mm512_extractf32x8_ps(acc, 1);
+	__m256		s256 = _mm256_add_ps(lo, hi);
+	__m128		s128 = _mm_add_ps(_mm256_castps256_ps128(s256), _mm256_extractf128_ps(s256, 1));
+
+	s128 = _mm_hadd_ps(s128, s128);
+	s128 = _mm_hadd_ps(s128, s128);
+	distance += _mm_cvtss_f32(s128);
+	return distance;
+}
+
+static float __attribute__((target("avx2,fma")))
+VectorL2SquaredDistance_avx2(int dim, float *ax, float *bx)
+{
+	float		distance = 0.0;
+	int			i = 0;
+	__m256		a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+
+	for (; i + 31 < dim; i += 32)
+	{
+		__m256		d0 = _mm256_sub_ps(_mm256_loadu_ps(ax + i), _mm256_loadu_ps(bx + i));
+		__m256		d1 = _mm256_sub_ps(_mm256_loadu_ps(ax + i + 8), _mm256_loadu_ps(bx + i + 8));
+		__m256		d2 = _mm256_sub_ps(_mm256_loadu_ps(ax + i + 16), _mm256_loadu_ps(bx + i + 16));
+		__m256		d3 = _mm256_sub_ps(_mm256_loadu_ps(ax + i + 24), _mm256_loadu_ps(bx + i + 24));
+
+		a0 = _mm256_fmadd_ps(d0, d0, a0);
+		a1 = _mm256_fmadd_ps(d1, d1, a1);
+		a2 = _mm256_fmadd_ps(d2, d2, a2);
+		a3 = _mm256_fmadd_ps(d3, d3, a3);
+	}
+	for (; i + 7 < dim; i += 8)
+	{
+		__m256		d = _mm256_sub_ps(_mm256_loadu_ps(ax + i), _mm256_loadu_ps(bx + i));
+
+		a0 = _mm256_fmadd_ps(d, d, a0);
+	}
+	for (; i < dim; i++)
+	{
+		float		d = ax[i] - bx[i];
+
+		distance += d * d;
+	}
+
+	__m256		acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+	__m128		lo = _mm256_castps256_ps128(acc);
+	__m128		hi = _mm256_extractf128_ps(acc, 1);
+	__m128		s = _mm_add_ps(lo, hi);
+
+	s = _mm_hadd_ps(s, s);
+	s = _mm_hadd_ps(s, s);
+	distance += _mm_cvtss_f32(s);
+	return distance;
+}
+
+static float __attribute__((target("sse2")))
+VectorL2SquaredDistance_sse2(int dim, float *ax, float *bx)
+{
+	float		distance = 0.0;
+	int			i = 0;
+	__m128		a0 = _mm_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+
+	for (; i + 15 < dim; i += 16)
+	{
+		__m128		d0 = _mm_sub_ps(_mm_loadu_ps(ax + i), _mm_loadu_ps(bx + i));
+		__m128		d1 = _mm_sub_ps(_mm_loadu_ps(ax + i + 4), _mm_loadu_ps(bx + i + 4));
+		__m128		d2 = _mm_sub_ps(_mm_loadu_ps(ax + i + 8), _mm_loadu_ps(bx + i + 8));
+		__m128		d3 = _mm_sub_ps(_mm_loadu_ps(ax + i + 12), _mm_loadu_ps(bx + i + 12));
+
+		a0 = _mm_add_ps(_mm_mul_ps(d0, d0), a0);
+		a1 = _mm_add_ps(_mm_mul_ps(d1, d1), a1);
+		a2 = _mm_add_ps(_mm_mul_ps(d2, d2), a2);
+		a3 = _mm_add_ps(_mm_mul_ps(d3, d3), a3);
+	}
+	for (; i + 3 < dim; i += 4)
+	{
+		__m128		d = _mm_sub_ps(_mm_loadu_ps(ax + i), _mm_loadu_ps(bx + i));
+
+		a0 = _mm_add_ps(_mm_mul_ps(d, d), a0);
+	}
+	for (; i < dim; i++)
+	{
+		float		d = ax[i] - bx[i];
+
+		distance += d * d;
+	}
+
+	__m128		s = _mm_add_ps(_mm_add_ps(a0, a1), _mm_add_ps(a2, a3));
+	__m128		hi = _mm_movehl_ps(s, s);
+
+	s = _mm_add_ps(s, hi);
+	s = _mm_add_ss(s, _mm_shuffle_ps(s, s, _MM_SHUFFLE(1, 1, 1, 1)));
+	distance += _mm_cvtss_f32(s);
+	return distance;
+}
+#endif
+
+static float
+VectorL2SquaredDistance_scalar(int dim, float *ax, float *bx)
 {
 	float		distance = 0.0;
 
@@ -571,6 +710,29 @@ VectorL2SquaredDistance(int dim, float *ax, float *bx)
 	}
 
 	return distance;
+}
+
+static float
+VectorL2SquaredDistance(int dim, float *ax, float *bx)
+{
+#if defined(__x86_64__) || defined(__i386__)
+	static float	(*func) (int, float *, float *) = NULL;
+
+	if (func == NULL)
+	{
+		if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512dq"))
+			func = VectorL2SquaredDistance_avx512f;
+		else if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+			func = VectorL2SquaredDistance_avx2;
+		else if (__builtin_cpu_supports("sse2"))
+			func = VectorL2SquaredDistance_sse2;
+		else
+			func = VectorL2SquaredDistance_scalar;
+	}
+	return func(dim, ax, bx);
+#else
+	return VectorL2SquaredDistance_scalar(dim, ax, bx);
+#endif
 }
 
 /*
@@ -604,8 +766,104 @@ vector_l2_squared_distance(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8((double) VectorL2SquaredDistance(a->dim, a->x, b->x));
 }
 
-VECTOR_TARGET_CLONES static float
-VectorInnerProduct(int dim, float *ax, float *bx)
+/*
+ * Inner product kernels. Runtime dispatch:
+ *   x86: AVX512F -> AVX2+FMA -> SSE2 -> scalar (auto-vectorized)
+ *   non-x86: scalar (auto-vectorized)
+ */
+#if defined(__x86_64__) || defined(__i386__)
+static float __attribute__((target("avx512f,avx512dq")))
+VectorInnerProduct_avx512f(int dim, float *ax, float *bx)
+{
+	float		distance = 0.0;
+	int			i = 0;
+	__m512		a0 = _mm512_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+
+	for (; i + 63 < dim; i += 64)
+	{
+		a0 = _mm512_fmadd_ps(_mm512_loadu_ps(ax + i), _mm512_loadu_ps(bx + i), a0);
+		a1 = _mm512_fmadd_ps(_mm512_loadu_ps(ax + i + 16), _mm512_loadu_ps(bx + i + 16), a1);
+		a2 = _mm512_fmadd_ps(_mm512_loadu_ps(ax + i + 32), _mm512_loadu_ps(bx + i + 32), a2);
+		a3 = _mm512_fmadd_ps(_mm512_loadu_ps(ax + i + 48), _mm512_loadu_ps(bx + i + 48), a3);
+	}
+	for (; i + 15 < dim; i += 16)
+		a0 = _mm512_fmadd_ps(_mm512_loadu_ps(ax + i), _mm512_loadu_ps(bx + i), a0);
+	for (; i < dim; i++)
+		distance += ax[i] * bx[i];
+
+	__m512		acc = _mm512_add_ps(_mm512_add_ps(a0, a1), _mm512_add_ps(a2, a3));
+	__m256		lo = _mm512_castps512_ps256(acc);
+	__m256		hi = _mm512_extractf32x8_ps(acc, 1);
+	__m256		s256 = _mm256_add_ps(lo, hi);
+	__m128		s128 = _mm_add_ps(_mm256_castps256_ps128(s256), _mm256_extractf128_ps(s256, 1));
+
+	s128 = _mm_hadd_ps(s128, s128);
+	s128 = _mm_hadd_ps(s128, s128);
+	distance += _mm_cvtss_f32(s128);
+	return distance;
+}
+
+static float __attribute__((target("avx2,fma")))
+VectorInnerProduct_avx2(int dim, float *ax, float *bx)
+{
+	float		distance = 0.0;
+	int			i = 0;
+	__m256		a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+
+	for (; i + 31 < dim; i += 32)
+	{
+		a0 = _mm256_fmadd_ps(_mm256_loadu_ps(ax + i), _mm256_loadu_ps(bx + i), a0);
+		a1 = _mm256_fmadd_ps(_mm256_loadu_ps(ax + i + 8), _mm256_loadu_ps(bx + i + 8), a1);
+		a2 = _mm256_fmadd_ps(_mm256_loadu_ps(ax + i + 16), _mm256_loadu_ps(bx + i + 16), a2);
+		a3 = _mm256_fmadd_ps(_mm256_loadu_ps(ax + i + 24), _mm256_loadu_ps(bx + i + 24), a3);
+	}
+	for (; i + 7 < dim; i += 8)
+		a0 = _mm256_fmadd_ps(_mm256_loadu_ps(ax + i), _mm256_loadu_ps(bx + i), a0);
+	for (; i < dim; i++)
+		distance += ax[i] * bx[i];
+
+	__m256		acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+	__m128		lo = _mm256_castps256_ps128(acc);
+	__m128		hi = _mm256_extractf128_ps(acc, 1);
+	__m128		s = _mm_add_ps(lo, hi);
+
+	s = _mm_hadd_ps(s, s);
+	s = _mm_hadd_ps(s, s);
+	distance += _mm_cvtss_f32(s);
+	return distance;
+}
+
+static float __attribute__((target("sse2")))
+VectorInnerProduct_sse2(int dim, float *ax, float *bx)
+{
+	float		distance = 0.0;
+	int			i = 0;
+	__m128		a0 = _mm_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+
+	for (; i + 15 < dim; i += 16)
+	{
+		a0 = _mm_add_ps(_mm_mul_ps(_mm_loadu_ps(ax + i), _mm_loadu_ps(bx + i)), a0);
+		a1 = _mm_add_ps(_mm_mul_ps(_mm_loadu_ps(ax + i + 4), _mm_loadu_ps(bx + i + 4)), a1);
+		a2 = _mm_add_ps(_mm_mul_ps(_mm_loadu_ps(ax + i + 8), _mm_loadu_ps(bx + i + 8)), a2);
+		a3 = _mm_add_ps(_mm_mul_ps(_mm_loadu_ps(ax + i + 12), _mm_loadu_ps(bx + i + 12)), a3);
+	}
+	for (; i + 3 < dim; i += 4)
+		a0 = _mm_add_ps(_mm_mul_ps(_mm_loadu_ps(ax + i), _mm_loadu_ps(bx + i)), a0);
+	for (; i < dim; i++)
+		distance += ax[i] * bx[i];
+
+	__m128		s = _mm_add_ps(_mm_add_ps(a0, a1), _mm_add_ps(a2, a3));
+	__m128		hi = _mm_movehl_ps(s, s);
+
+	s = _mm_add_ps(s, hi);
+	s = _mm_add_ss(s, _mm_shuffle_ps(s, s, _MM_SHUFFLE(1, 1, 1, 1)));
+	distance += _mm_cvtss_f32(s);
+	return distance;
+}
+#endif
+
+static float
+VectorInnerProduct_scalar(int dim, float *ax, float *bx)
 {
 	float		distance = 0.0;
 
@@ -614,6 +872,29 @@ VectorInnerProduct(int dim, float *ax, float *bx)
 		distance += ax[i] * bx[i];
 
 	return distance;
+}
+
+static float
+VectorInnerProduct(int dim, float *ax, float *bx)
+{
+#if defined(__x86_64__) || defined(__i386__)
+	static float	(*func) (int, float *, float *) = NULL;
+
+	if (func == NULL)
+	{
+		if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512dq"))
+			func = VectorInnerProduct_avx512f;
+		else if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+			func = VectorInnerProduct_avx2;
+		else if (__builtin_cpu_supports("sse2"))
+			func = VectorInnerProduct_sse2;
+		else
+			func = VectorInnerProduct_scalar;
+	}
+	return func(dim, ax, bx);
+#else
+	return VectorInnerProduct_scalar(dim, ax, bx);
+#endif
 }
 
 /*
@@ -646,8 +927,196 @@ vector_negative_inner_product(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8((double) -VectorInnerProduct(a->dim, a->x, b->x));
 }
 
-VECTOR_TARGET_CLONES static double
-VectorCosineSimilarity(int dim, float *ax, float *bx)
+/*
+ * Cosine similarity kernels. Runtime dispatch:
+ *   x86: AVX512F -> AVX2+FMA -> SSE2 -> scalar (auto-vectorized)
+ *   non-x86: scalar (auto-vectorized)
+ * Computes 3 dot products (similarity, norma, normb) in one pass.
+ */
+#if defined(__x86_64__) || defined(__i386__)
+static double __attribute__((target("avx512f,avx512dq")))
+VectorCosineSimilarity_avx512f(int dim, float *ax, float *bx)
+{
+	float		similarity = 0.0;
+	float		norma = 0.0;
+	float		normb = 0.0;
+	int			i = 0;
+	__m512		s0 = _mm512_setzero_ps(), s1 = s0;
+	__m512		na0 = _mm512_setzero_ps(), na1 = na0;
+	__m512		nb0 = _mm512_setzero_ps(), nb1 = nb0;
+
+	for (; i + 31 < dim; i += 32)
+	{
+		__m512		a = _mm512_loadu_ps(ax + i);
+		__m512		b = _mm512_loadu_ps(bx + i);
+		__m512		c = _mm512_loadu_ps(ax + i + 16);
+		__m512		d = _mm512_loadu_ps(bx + i + 16);
+
+		s0 = _mm512_fmadd_ps(a, b, s0);
+		s1 = _mm512_fmadd_ps(c, d, s1);
+		na0 = _mm512_fmadd_ps(a, a, na0);
+		na1 = _mm512_fmadd_ps(c, c, na1);
+		nb0 = _mm512_fmadd_ps(b, b, nb0);
+		nb1 = _mm512_fmadd_ps(d, d, nb1);
+	}
+	for (; i + 15 < dim; i += 16)
+	{
+		__m512		a = _mm512_loadu_ps(ax + i);
+		__m512		b = _mm512_loadu_ps(bx + i);
+
+		s0 = _mm512_fmadd_ps(a, b, s0);
+		na0 = _mm512_fmadd_ps(a, a, na0);
+		nb0 = _mm512_fmadd_ps(b, b, nb0);
+	}
+	for (; i < dim; i++)
+	{
+		similarity += ax[i] * bx[i];
+		norma += ax[i] * ax[i];
+		normb += bx[i] * bx[i];
+	}
+
+#define VECTOR_COS_REDUCE512(acc) \
+	do { \
+		__m512		_sum = _mm512_add_ps(acc##0, acc##1); \
+		__m256		_lo = _mm512_castps512_ps256(_sum); \
+		__m256		_hi = _mm512_extractf32x8_ps(_sum, 1); \
+		__m256		_s256 = _mm256_add_ps(_lo, _hi); \
+		__m128		_s128 = _mm_add_ps(_mm256_castps256_ps128(_s256), _mm256_extractf128_ps(_s256, 1)); \
+		_s128 = _mm_hadd_ps(_s128, _s128); \
+		_s128 = _mm_hadd_ps(_s128, _s128); \
+		acc##_out += _mm_cvtss_f32(_s128); \
+	} while (0)
+
+	float		s_out = 0.0, na_out = 0.0, nb_out = 0.0;
+
+	VECTOR_COS_REDUCE512(s);
+	VECTOR_COS_REDUCE512(na);
+	VECTOR_COS_REDUCE512(nb);
+	similarity += s_out;
+	norma += na_out;
+	normb += nb_out;
+#undef VECTOR_COS_REDUCE512
+
+	return (double) similarity / sqrt((double) norma * (double) normb);
+}
+
+static double __attribute__((target("avx2,fma")))
+VectorCosineSimilarity_avx2(int dim, float *ax, float *bx)
+{
+	float		similarity = 0.0;
+	float		norma = 0.0;
+	float		normb = 0.0;
+	int			i = 0;
+	__m256		s0 = _mm256_setzero_ps(), s1 = s0;
+	__m256		na0 = _mm256_setzero_ps(), na1 = na0;
+	__m256		nb0 = _mm256_setzero_ps(), nb1 = nb0;
+
+	for (; i + 15 < dim; i += 16)
+	{
+		__m256		a = _mm256_loadu_ps(ax + i);
+		__m256		b = _mm256_loadu_ps(bx + i);
+		__m256		c = _mm256_loadu_ps(ax + i + 8);
+		__m256		d = _mm256_loadu_ps(bx + i + 8);
+
+		s0 = _mm256_fmadd_ps(a, b, s0);
+		s1 = _mm256_fmadd_ps(c, d, s1);
+		na0 = _mm256_fmadd_ps(a, a, na0);
+		na1 = _mm256_fmadd_ps(c, c, na1);
+		nb0 = _mm256_fmadd_ps(b, b, nb0);
+		nb1 = _mm256_fmadd_ps(d, d, nb1);
+	}
+	for (; i + 7 < dim; i += 8)
+	{
+		__m256		a = _mm256_loadu_ps(ax + i);
+		__m256		b = _mm256_loadu_ps(bx + i);
+
+		s0 = _mm256_fmadd_ps(a, b, s0);
+		na0 = _mm256_fmadd_ps(a, a, na0);
+		nb0 = _mm256_fmadd_ps(b, b, nb0);
+	}
+	for (; i < dim; i++)
+	{
+		similarity += ax[i] * bx[i];
+		norma += ax[i] * ax[i];
+		normb += bx[i] * bx[i];
+	}
+
+#define VECTOR_COS_REDUCE256(acc) \
+	do { \
+		__m256		_sum = _mm256_add_ps(acc##0, acc##1); \
+		__m128		_lo = _mm256_castps256_ps128(_sum); \
+		__m128		_hi = _mm256_extractf128_ps(_sum, 1); \
+		__m128		_s = _mm_add_ps(_lo, _hi); \
+		_s = _mm_hadd_ps(_s, _s); \
+		_s = _mm_hadd_ps(_s, _s); \
+		acc##_out += _mm_cvtss_f32(_s); \
+	} while (0)
+
+	float		s_out = 0.0, na_out = 0.0, nb_out = 0.0;
+
+	VECTOR_COS_REDUCE256(s);
+	VECTOR_COS_REDUCE256(na);
+	VECTOR_COS_REDUCE256(nb);
+	similarity += s_out;
+	norma += na_out;
+	normb += nb_out;
+#undef VECTOR_COS_REDUCE256
+
+	return (double) similarity / sqrt((double) norma * (double) normb);
+}
+
+static double __attribute__((target("sse2")))
+VectorCosineSimilarity_sse2(int dim, float *ax, float *bx)
+{
+	float		similarity = 0.0;
+	float		norma = 0.0;
+	float		normb = 0.0;
+	int			i = 0;
+	__m128		s0 = _mm_setzero_ps();
+	__m128		na0 = _mm_setzero_ps();
+	__m128		nb0 = _mm_setzero_ps();
+
+	for (; i + 3 < dim; i += 4)
+	{
+		__m128		a = _mm_loadu_ps(ax + i);
+		__m128		b = _mm_loadu_ps(bx + i);
+
+		s0 = _mm_add_ps(_mm_mul_ps(a, b), s0);
+		na0 = _mm_add_ps(_mm_mul_ps(a, a), na0);
+		nb0 = _mm_add_ps(_mm_mul_ps(b, b), nb0);
+	}
+	for (; i < dim; i++)
+	{
+		similarity += ax[i] * bx[i];
+		norma += ax[i] * ax[i];
+		normb += bx[i] * bx[i];
+	}
+
+#define VECTOR_COS_REDUCE128(acc) \
+	do { \
+		__m128		_s = acc##0; \
+		__m128		_hi = _mm_movehl_ps(_s, _s); \
+		_s = _mm_add_ps(_s, _hi); \
+		_s = _mm_add_ss(_s, _mm_shuffle_ps(_s, _s, _MM_SHUFFLE(1, 1, 1, 1))); \
+		acc##_out += _mm_cvtss_f32(_s); \
+	} while (0)
+
+	float		s_out = 0.0, na_out = 0.0, nb_out = 0.0;
+
+	VECTOR_COS_REDUCE128(s);
+	VECTOR_COS_REDUCE128(na);
+	VECTOR_COS_REDUCE128(nb);
+	similarity += s_out;
+	norma += na_out;
+	normb += nb_out;
+#undef VECTOR_COS_REDUCE128
+
+	return (double) similarity / sqrt((double) norma * (double) normb);
+}
+#endif
+
+static double
+VectorCosineSimilarity_scalar(int dim, float *ax, float *bx)
 {
 	float		similarity = 0.0;
 	float		norma = 0.0;
@@ -663,6 +1132,29 @@ VectorCosineSimilarity(int dim, float *ax, float *bx)
 
 	/* Use sqrt(a * b) over sqrt(a) * sqrt(b) */
 	return (double) similarity / sqrt((double) norma * (double) normb);
+}
+
+static double
+VectorCosineSimilarity(int dim, float *ax, float *bx)
+{
+#if defined(__x86_64__) || defined(__i386__)
+	static double (*func) (int, float *, float *) = NULL;
+
+	if (func == NULL)
+	{
+		if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512dq"))
+			func = VectorCosineSimilarity_avx512f;
+		else if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+			func = VectorCosineSimilarity_avx2;
+		else if (__builtin_cpu_supports("sse2"))
+			func = VectorCosineSimilarity_sse2;
+		else
+			func = VectorCosineSimilarity_scalar;
+	}
+	return func(dim, ax, bx);
+#else
+	return VectorCosineSimilarity_scalar(dim, ax, bx);
+#endif
 }
 
 /*
