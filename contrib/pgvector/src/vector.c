@@ -564,7 +564,8 @@ halfvec_to_vector(PG_FUNCTION_ARGS)
 /*
  * L2 squared distance kernels. Runtime dispatch:
  *   x86: AVX512F -> AVX2+FMA -> SSE2 -> scalar (auto-vectorized)
- *   non-x86: scalar (auto-vectorized)
+ *   ARM: NEON (aarch64 / ARMv7+NEON)
+ *   other: scalar (auto-vectorized)
  */
 #if defined(__x86_64__) || defined(__i386__)
 static float __attribute__((target("avx512f,avx512dq")))
@@ -573,6 +574,9 @@ VectorL2SquaredDistance_avx512f(int dim, float *ax, float *bx)
 	float		distance = 0.0;
 	int			i = 0;
 	__m512		a0 = _mm512_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+	__m512		acc;
+	__m256		lo, hi, s256;
+	__m128		s128;
 
 	for (; i + 63 < dim; i += 64)
 	{
@@ -599,12 +603,11 @@ VectorL2SquaredDistance_avx512f(int dim, float *ax, float *bx)
 		distance += d * d;
 	}
 
-	__m512		acc = _mm512_add_ps(_mm512_add_ps(a0, a1), _mm512_add_ps(a2, a3));
-	__m256		lo = _mm512_castps512_ps256(acc);
-	__m256		hi = _mm512_extractf32x8_ps(acc, 1);
-	__m256		s256 = _mm256_add_ps(lo, hi);
-	__m128		s128 = _mm_add_ps(_mm256_castps256_ps128(s256), _mm256_extractf128_ps(s256, 1));
-
+	acc = _mm512_add_ps(_mm512_add_ps(a0, a1), _mm512_add_ps(a2, a3));
+	lo = _mm512_castps512_ps256(acc);
+	hi = _mm512_extractf32x8_ps(acc, 1);
+	s256 = _mm256_add_ps(lo, hi);
+	s128 = _mm_add_ps(_mm256_castps256_ps128(s256), _mm256_extractf128_ps(s256, 1));
 	s128 = _mm_hadd_ps(s128, s128);
 	s128 = _mm_hadd_ps(s128, s128);
 	distance += _mm_cvtss_f32(s128);
@@ -617,6 +620,8 @@ VectorL2SquaredDistance_avx2(int dim, float *ax, float *bx)
 	float		distance = 0.0;
 	int			i = 0;
 	__m256		a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+	__m256		acc;
+	__m128		lo, hi, s;
 
 	for (; i + 31 < dim; i += 32)
 	{
@@ -643,11 +648,10 @@ VectorL2SquaredDistance_avx2(int dim, float *ax, float *bx)
 		distance += d * d;
 	}
 
-	__m256		acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
-	__m128		lo = _mm256_castps256_ps128(acc);
-	__m128		hi = _mm256_extractf128_ps(acc, 1);
-	__m128		s = _mm_add_ps(lo, hi);
-
+	acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+	lo = _mm256_castps256_ps128(acc);
+	hi = _mm256_extractf128_ps(acc, 1);
+	s = _mm_add_ps(lo, hi);
 	s = _mm_hadd_ps(s, s);
 	s = _mm_hadd_ps(s, s);
 	distance += _mm_cvtss_f32(s);
@@ -660,6 +664,7 @@ VectorL2SquaredDistance_sse2(int dim, float *ax, float *bx)
 	float		distance = 0.0;
 	int			i = 0;
 	__m128		a0 = _mm_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+	__m128		s, hi;
 
 	for (; i + 15 < dim; i += 16)
 	{
@@ -686,12 +691,56 @@ VectorL2SquaredDistance_sse2(int dim, float *ax, float *bx)
 		distance += d * d;
 	}
 
-	__m128		s = _mm_add_ps(_mm_add_ps(a0, a1), _mm_add_ps(a2, a3));
-	__m128		hi = _mm_movehl_ps(s, s);
-
+	s = _mm_add_ps(_mm_add_ps(a0, a1), _mm_add_ps(a2, a3));
+	hi = _mm_movehl_ps(s, s);
 	s = _mm_add_ps(s, hi);
 	s = _mm_add_ss(s, _mm_shuffle_ps(s, s, _MM_SHUFFLE(1, 1, 1, 1)));
 	distance += _mm_cvtss_f32(s);
+	return distance;
+}
+#endif
+
+#if defined(__aarch64__) || defined(__ARM_NEON)
+static float
+VectorL2SquaredDistance_neon(int dim, float *ax, float *bx)
+{
+	float		distance = 0.0;
+	int			i = 0;
+	float32x4_t	a0 = vdupq_n_f32(0.0f), a1 = a0, a2 = a0, a3 = a0;
+	float32x4_t	d0, d1, d2, d3, d;
+	float32x4_t	sum;
+	float32x2_t	lo, hi, sum2;
+
+	for (; i + 15 < dim; i += 16)
+	{
+		d0 = vsubq_f32(vld1q_f32(ax + i), vld1q_f32(bx + i));
+		d1 = vsubq_f32(vld1q_f32(ax + i + 4), vld1q_f32(bx + i + 4));
+		d2 = vsubq_f32(vld1q_f32(ax + i + 8), vld1q_f32(bx + i + 8));
+		d3 = vsubq_f32(vld1q_f32(ax + i + 12), vld1q_f32(bx + i + 12));
+
+		a0 = vmlaq_f32(a0, d0, d0);
+		a1 = vmlaq_f32(a1, d1, d1);
+		a2 = vmlaq_f32(a2, d2, d2);
+		a3 = vmlaq_f32(a3, d3, d3);
+	}
+	for (; i + 3 < dim; i += 4)
+	{
+		d = vsubq_f32(vld1q_f32(ax + i), vld1q_f32(bx + i));
+		a0 = vmlaq_f32(a0, d, d);
+	}
+	for (; i < dim; i++)
+	{
+		float		d = ax[i] - bx[i];
+
+		distance += d * d;
+	}
+
+	sum = vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3));
+	lo = vget_low_f32(sum);
+	hi = vget_high_f32(sum);
+	sum2 = vadd_f32(lo, hi);
+	sum2 = vpadd_f32(sum2, sum2);
+	distance += vget_lane_f32(sum2, 0);
 	return distance;
 }
 #endif
@@ -730,6 +779,8 @@ VectorL2SquaredDistance(int dim, float *ax, float *bx)
 			func = VectorL2SquaredDistance_scalar;
 	}
 	return func(dim, ax, bx);
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+	return VectorL2SquaredDistance_neon(dim, ax, bx);
 #else
 	return VectorL2SquaredDistance_scalar(dim, ax, bx);
 #endif
@@ -769,7 +820,8 @@ vector_l2_squared_distance(PG_FUNCTION_ARGS)
 /*
  * Inner product kernels. Runtime dispatch:
  *   x86: AVX512F -> AVX2+FMA -> SSE2 -> scalar (auto-vectorized)
- *   non-x86: scalar (auto-vectorized)
+ *   ARM: NEON (aarch64 / ARMv7+NEON)
+ *   other: scalar (auto-vectorized)
  */
 #if defined(__x86_64__) || defined(__i386__)
 static float __attribute__((target("avx512f,avx512dq")))
@@ -778,6 +830,9 @@ VectorInnerProduct_avx512f(int dim, float *ax, float *bx)
 	float		distance = 0.0;
 	int			i = 0;
 	__m512		a0 = _mm512_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+	__m512		acc;
+	__m256		lo, hi, s256;
+	__m128		s128;
 
 	for (; i + 63 < dim; i += 64)
 	{
@@ -791,12 +846,11 @@ VectorInnerProduct_avx512f(int dim, float *ax, float *bx)
 	for (; i < dim; i++)
 		distance += ax[i] * bx[i];
 
-	__m512		acc = _mm512_add_ps(_mm512_add_ps(a0, a1), _mm512_add_ps(a2, a3));
-	__m256		lo = _mm512_castps512_ps256(acc);
-	__m256		hi = _mm512_extractf32x8_ps(acc, 1);
-	__m256		s256 = _mm256_add_ps(lo, hi);
-	__m128		s128 = _mm_add_ps(_mm256_castps256_ps128(s256), _mm256_extractf128_ps(s256, 1));
-
+	acc = _mm512_add_ps(_mm512_add_ps(a0, a1), _mm512_add_ps(a2, a3));
+	lo = _mm512_castps512_ps256(acc);
+	hi = _mm512_extractf32x8_ps(acc, 1);
+	s256 = _mm256_add_ps(lo, hi);
+	s128 = _mm_add_ps(_mm256_castps256_ps128(s256), _mm256_extractf128_ps(s256, 1));
 	s128 = _mm_hadd_ps(s128, s128);
 	s128 = _mm_hadd_ps(s128, s128);
 	distance += _mm_cvtss_f32(s128);
@@ -809,6 +863,8 @@ VectorInnerProduct_avx2(int dim, float *ax, float *bx)
 	float		distance = 0.0;
 	int			i = 0;
 	__m256		a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+	__m256		acc;
+	__m128		lo, hi, s;
 
 	for (; i + 31 < dim; i += 32)
 	{
@@ -822,11 +878,10 @@ VectorInnerProduct_avx2(int dim, float *ax, float *bx)
 	for (; i < dim; i++)
 		distance += ax[i] * bx[i];
 
-	__m256		acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
-	__m128		lo = _mm256_castps256_ps128(acc);
-	__m128		hi = _mm256_extractf128_ps(acc, 1);
-	__m128		s = _mm_add_ps(lo, hi);
-
+	acc = _mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3));
+	lo = _mm256_castps256_ps128(acc);
+	hi = _mm256_extractf128_ps(acc, 1);
+	s = _mm_add_ps(lo, hi);
 	s = _mm_hadd_ps(s, s);
 	s = _mm_hadd_ps(s, s);
 	distance += _mm_cvtss_f32(s);
@@ -839,6 +894,7 @@ VectorInnerProduct_sse2(int dim, float *ax, float *bx)
 	float		distance = 0.0;
 	int			i = 0;
 	__m128		a0 = _mm_setzero_ps(), a1 = a0, a2 = a0, a3 = a0;
+	__m128		s, hi;
 
 	for (; i + 15 < dim; i += 16)
 	{
@@ -852,12 +908,43 @@ VectorInnerProduct_sse2(int dim, float *ax, float *bx)
 	for (; i < dim; i++)
 		distance += ax[i] * bx[i];
 
-	__m128		s = _mm_add_ps(_mm_add_ps(a0, a1), _mm_add_ps(a2, a3));
-	__m128		hi = _mm_movehl_ps(s, s);
-
+	s = _mm_add_ps(_mm_add_ps(a0, a1), _mm_add_ps(a2, a3));
+	hi = _mm_movehl_ps(s, s);
 	s = _mm_add_ps(s, hi);
 	s = _mm_add_ss(s, _mm_shuffle_ps(s, s, _MM_SHUFFLE(1, 1, 1, 1)));
 	distance += _mm_cvtss_f32(s);
+	return distance;
+}
+#endif
+
+#if defined(__aarch64__) || defined(__ARM_NEON)
+static float
+VectorInnerProduct_neon(int dim, float *ax, float *bx)
+{
+	float		distance = 0.0;
+	int			i = 0;
+	float32x4_t	a0 = vdupq_n_f32(0.0f), a1 = a0, a2 = a0, a3 = a0;
+	float32x4_t	sum;
+	float32x2_t	lo, hi, sum2;
+
+	for (; i + 15 < dim; i += 16)
+	{
+		a0 = vmlaq_f32(a0, vld1q_f32(ax + i), vld1q_f32(bx + i));
+		a1 = vmlaq_f32(a1, vld1q_f32(ax + i + 4), vld1q_f32(bx + i + 4));
+		a2 = vmlaq_f32(a2, vld1q_f32(ax + i + 8), vld1q_f32(bx + i + 8));
+		a3 = vmlaq_f32(a3, vld1q_f32(ax + i + 12), vld1q_f32(bx + i + 12));
+	}
+	for (; i + 3 < dim; i += 4)
+		a0 = vmlaq_f32(a0, vld1q_f32(ax + i), vld1q_f32(bx + i));
+	for (; i < dim; i++)
+		distance += ax[i] * bx[i];
+
+	sum = vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3));
+	lo = vget_low_f32(sum);
+	hi = vget_high_f32(sum);
+	sum2 = vadd_f32(lo, hi);
+	sum2 = vpadd_f32(sum2, sum2);
+	distance += vget_lane_f32(sum2, 0);
 	return distance;
 }
 #endif
@@ -892,6 +979,8 @@ VectorInnerProduct(int dim, float *ax, float *bx)
 			func = VectorInnerProduct_scalar;
 	}
 	return func(dim, ax, bx);
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+	return VectorInnerProduct_neon(dim, ax, bx);
 #else
 	return VectorInnerProduct_scalar(dim, ax, bx);
 #endif
@@ -930,7 +1019,8 @@ vector_negative_inner_product(PG_FUNCTION_ARGS)
 /*
  * Cosine similarity kernels. Runtime dispatch:
  *   x86: AVX512F -> AVX2+FMA -> SSE2 -> scalar (auto-vectorized)
- *   non-x86: scalar (auto-vectorized)
+ *   ARM: NEON (aarch64 / ARMv7+NEON)
+ *   other: scalar (auto-vectorized)
  * Computes 3 dot products (similarity, norma, normb) in one pass.
  */
 #if defined(__x86_64__) || defined(__i386__)
@@ -944,6 +1034,9 @@ VectorCosineSimilarity_avx512f(int dim, float *ax, float *bx)
 	__m512		s0 = _mm512_setzero_ps(), s1 = s0;
 	__m512		na0 = _mm512_setzero_ps(), na1 = na0;
 	__m512		nb0 = _mm512_setzero_ps(), nb1 = nb0;
+	__m512		acc;
+	__m256		lo, hi, s256;
+	__m128		s128;
 
 	for (; i + 31 < dim; i += 32)
 	{
@@ -975,27 +1068,32 @@ VectorCosineSimilarity_avx512f(int dim, float *ax, float *bx)
 		normb += bx[i] * bx[i];
 	}
 
-#define VECTOR_COS_REDUCE512(acc) \
-	do { \
-		__m512		_sum = _mm512_add_ps(acc##0, acc##1); \
-		__m256		_lo = _mm512_castps512_ps256(_sum); \
-		__m256		_hi = _mm512_extractf32x8_ps(_sum, 1); \
-		__m256		_s256 = _mm256_add_ps(_lo, _hi); \
-		__m128		_s128 = _mm_add_ps(_mm256_castps256_ps128(_s256), _mm256_extractf128_ps(_s256, 1)); \
-		_s128 = _mm_hadd_ps(_s128, _s128); \
-		_s128 = _mm_hadd_ps(_s128, _s128); \
-		acc##_out += _mm_cvtss_f32(_s128); \
-	} while (0)
+	acc = _mm512_add_ps(s0, s1);
+	lo = _mm512_castps512_ps256(acc);
+	hi = _mm512_extractf32x8_ps(acc, 1);
+	s256 = _mm256_add_ps(lo, hi);
+	s128 = _mm_add_ps(_mm256_castps256_ps128(s256), _mm256_extractf128_ps(s256, 1));
+	s128 = _mm_hadd_ps(s128, s128);
+	s128 = _mm_hadd_ps(s128, s128);
+	similarity += _mm_cvtss_f32(s128);
 
-	float		s_out = 0.0, na_out = 0.0, nb_out = 0.0;
+	acc = _mm512_add_ps(na0, na1);
+	lo = _mm512_castps512_ps256(acc);
+	hi = _mm512_extractf32x8_ps(acc, 1);
+	s256 = _mm256_add_ps(lo, hi);
+	s128 = _mm_add_ps(_mm256_castps256_ps128(s256), _mm256_extractf128_ps(s256, 1));
+	s128 = _mm_hadd_ps(s128, s128);
+	s128 = _mm_hadd_ps(s128, s128);
+	norma += _mm_cvtss_f32(s128);
 
-	VECTOR_COS_REDUCE512(s);
-	VECTOR_COS_REDUCE512(na);
-	VECTOR_COS_REDUCE512(nb);
-	similarity += s_out;
-	norma += na_out;
-	normb += nb_out;
-#undef VECTOR_COS_REDUCE512
+	acc = _mm512_add_ps(nb0, nb1);
+	lo = _mm512_castps512_ps256(acc);
+	hi = _mm512_extractf32x8_ps(acc, 1);
+	s256 = _mm256_add_ps(lo, hi);
+	s128 = _mm_add_ps(_mm256_castps256_ps128(s256), _mm256_extractf128_ps(s256, 1));
+	s128 = _mm_hadd_ps(s128, s128);
+	s128 = _mm_hadd_ps(s128, s128);
+	normb += _mm_cvtss_f32(s128);
 
 	return (double) similarity / sqrt((double) norma * (double) normb);
 }
@@ -1010,6 +1108,8 @@ VectorCosineSimilarity_avx2(int dim, float *ax, float *bx)
 	__m256		s0 = _mm256_setzero_ps(), s1 = s0;
 	__m256		na0 = _mm256_setzero_ps(), na1 = na0;
 	__m256		nb0 = _mm256_setzero_ps(), nb1 = nb0;
+	__m256		acc;
+	__m128		lo, hi, s;
 
 	for (; i + 15 < dim; i += 16)
 	{
@@ -1041,26 +1141,29 @@ VectorCosineSimilarity_avx2(int dim, float *ax, float *bx)
 		normb += bx[i] * bx[i];
 	}
 
-#define VECTOR_COS_REDUCE256(acc) \
-	do { \
-		__m256		_sum = _mm256_add_ps(acc##0, acc##1); \
-		__m128		_lo = _mm256_castps256_ps128(_sum); \
-		__m128		_hi = _mm256_extractf128_ps(_sum, 1); \
-		__m128		_s = _mm_add_ps(_lo, _hi); \
-		_s = _mm_hadd_ps(_s, _s); \
-		_s = _mm_hadd_ps(_s, _s); \
-		acc##_out += _mm_cvtss_f32(_s); \
-	} while (0)
+	acc = _mm256_add_ps(s0, s1);
+	lo = _mm256_castps256_ps128(acc);
+	hi = _mm256_extractf128_ps(acc, 1);
+	s = _mm_add_ps(lo, hi);
+	s = _mm_hadd_ps(s, s);
+	s = _mm_hadd_ps(s, s);
+	similarity += _mm_cvtss_f32(s);
 
-	float		s_out = 0.0, na_out = 0.0, nb_out = 0.0;
+	acc = _mm256_add_ps(na0, na1);
+	lo = _mm256_castps256_ps128(acc);
+	hi = _mm256_extractf128_ps(acc, 1);
+	s = _mm_add_ps(lo, hi);
+	s = _mm_hadd_ps(s, s);
+	s = _mm_hadd_ps(s, s);
+	norma += _mm_cvtss_f32(s);
 
-	VECTOR_COS_REDUCE256(s);
-	VECTOR_COS_REDUCE256(na);
-	VECTOR_COS_REDUCE256(nb);
-	similarity += s_out;
-	norma += na_out;
-	normb += nb_out;
-#undef VECTOR_COS_REDUCE256
+	acc = _mm256_add_ps(nb0, nb1);
+	lo = _mm256_castps256_ps128(acc);
+	hi = _mm256_extractf128_ps(acc, 1);
+	s = _mm_add_ps(lo, hi);
+	s = _mm_hadd_ps(s, s);
+	s = _mm_hadd_ps(s, s);
+	normb += _mm_cvtss_f32(s);
 
 	return (double) similarity / sqrt((double) norma * (double) normb);
 }
@@ -1075,6 +1178,7 @@ VectorCosineSimilarity_sse2(int dim, float *ax, float *bx)
 	__m128		s0 = _mm_setzero_ps();
 	__m128		na0 = _mm_setzero_ps();
 	__m128		nb0 = _mm_setzero_ps();
+	__m128		s, hi;
 
 	for (; i + 3 < dim; i += 4)
 	{
@@ -1092,24 +1196,92 @@ VectorCosineSimilarity_sse2(int dim, float *ax, float *bx)
 		normb += bx[i] * bx[i];
 	}
 
-#define VECTOR_COS_REDUCE128(acc) \
-	do { \
-		__m128		_s = acc##0; \
-		__m128		_hi = _mm_movehl_ps(_s, _s); \
-		_s = _mm_add_ps(_s, _hi); \
-		_s = _mm_add_ss(_s, _mm_shuffle_ps(_s, _s, _MM_SHUFFLE(1, 1, 1, 1))); \
-		acc##_out += _mm_cvtss_f32(_s); \
-	} while (0)
+	s = s0;
+	hi = _mm_movehl_ps(s, s);
+	s = _mm_add_ps(s, hi);
+	s = _mm_add_ss(s, _mm_shuffle_ps(s, s, _MM_SHUFFLE(1, 1, 1, 1)));
+	similarity += _mm_cvtss_f32(s);
 
-	float		s_out = 0.0, na_out = 0.0, nb_out = 0.0;
+	s = na0;
+	hi = _mm_movehl_ps(s, s);
+	s = _mm_add_ps(s, hi);
+	s = _mm_add_ss(s, _mm_shuffle_ps(s, s, _MM_SHUFFLE(1, 1, 1, 1)));
+	norma += _mm_cvtss_f32(s);
 
-	VECTOR_COS_REDUCE128(s);
-	VECTOR_COS_REDUCE128(na);
-	VECTOR_COS_REDUCE128(nb);
-	similarity += s_out;
-	norma += na_out;
-	normb += nb_out;
-#undef VECTOR_COS_REDUCE128
+	s = nb0;
+	hi = _mm_movehl_ps(s, s);
+	s = _mm_add_ps(s, hi);
+	s = _mm_add_ss(s, _mm_shuffle_ps(s, s, _MM_SHUFFLE(1, 1, 1, 1)));
+	normb += _mm_cvtss_f32(s);
+
+	return (double) similarity / sqrt((double) norma * (double) normb);
+}
+#endif
+
+#if defined(__aarch64__) || defined(__ARM_NEON)
+static double
+VectorCosineSimilarity_neon(int dim, float *ax, float *bx)
+{
+	float		similarity = 0.0;
+	float		norma = 0.0;
+	float		normb = 0.0;
+	int			i = 0;
+	float32x4_t	s0 = vdupq_n_f32(0.0f), s1 = s0;
+	float32x4_t	na0 = vdupq_n_f32(0.0f), na1 = na0;
+	float32x4_t	nb0 = vdupq_n_f32(0.0f), nb1 = nb0;
+	float32x4_t	sum;
+	float32x2_t	lo, hi, sum2;
+
+	for (; i + 7 < dim; i += 8)
+	{
+		float32x4_t a = vld1q_f32(ax + i);
+		float32x4_t b = vld1q_f32(bx + i);
+		float32x4_t c = vld1q_f32(ax + i + 4);
+		float32x4_t d = vld1q_f32(bx + i + 4);
+
+		s0 = vmlaq_f32(s0, a, b);
+		s1 = vmlaq_f32(s1, c, d);
+		na0 = vmlaq_f32(na0, a, a);
+		na1 = vmlaq_f32(na1, c, c);
+		nb0 = vmlaq_f32(nb0, b, b);
+		nb1 = vmlaq_f32(nb1, d, d);
+	}
+	for (; i + 3 < dim; i += 4)
+	{
+		float32x4_t a = vld1q_f32(ax + i);
+		float32x4_t b = vld1q_f32(bx + i);
+
+		s0 = vmlaq_f32(s0, a, b);
+		na0 = vmlaq_f32(na0, a, a);
+		nb0 = vmlaq_f32(nb0, b, b);
+	}
+	for (; i < dim; i++)
+	{
+		similarity += ax[i] * bx[i];
+		norma += ax[i] * ax[i];
+		normb += bx[i] * bx[i];
+	}
+
+	sum = vaddq_f32(s0, s1);
+	lo = vget_low_f32(sum);
+	hi = vget_high_f32(sum);
+	sum2 = vadd_f32(lo, hi);
+	sum2 = vpadd_f32(sum2, sum2);
+	similarity += vget_lane_f32(sum2, 0);
+
+	sum = vaddq_f32(na0, na1);
+	lo = vget_low_f32(sum);
+	hi = vget_high_f32(sum);
+	sum2 = vadd_f32(lo, hi);
+	sum2 = vpadd_f32(sum2, sum2);
+	norma += vget_lane_f32(sum2, 0);
+
+	sum = vaddq_f32(nb0, nb1);
+	lo = vget_low_f32(sum);
+	hi = vget_high_f32(sum);
+	sum2 = vadd_f32(lo, hi);
+	sum2 = vpadd_f32(sum2, sum2);
+	normb += vget_lane_f32(sum2, 0);
 
 	return (double) similarity / sqrt((double) norma * (double) normb);
 }
@@ -1152,6 +1324,8 @@ VectorCosineSimilarity(int dim, float *ax, float *bx)
 			func = VectorCosineSimilarity_scalar;
 	}
 	return func(dim, ax, bx);
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+	return VectorCosineSimilarity_neon(dim, ax, bx);
 #else
 	return VectorCosineSimilarity_scalar(dim, ax, bx);
 #endif
