@@ -1875,6 +1875,19 @@ VectorGetSoABatchDistFunc(PGFunction fn)
 	return NULL;
 }
 
+#if defined(__x86_64__) || defined(__i386__)
+static const int32_t soa_masks[8][8] __attribute__((aligned(32))) = {
+	{0, 0, 0, 0, 0, 0, 0, 0},
+	{-1, 0, 0, 0, 0, 0, 0, 0},
+	{-1, -1, 0, 0, 0, 0, 0, 0},
+	{-1, -1, -1, 0, 0, 0, 0, 0},
+	{-1, -1, -1, -1, 0, 0, 0, 0},
+	{-1, -1, -1, -1, -1, 0, 0, 0},
+	{-1, -1, -1, -1, -1, -1, 0, 0},
+	{-1, -1, -1, -1, -1, -1, -1, 0}
+};
+#endif
+
 void
 VectorBatchL2SquaredDistance_SoA_InPlace(int dim, const float *q, const float *soa_values, double *distances, int count)
 {
@@ -1927,6 +1940,56 @@ VectorBatchL2SquaredDistance_SoA_InPlace(int dim, const float *q, const float *s
 			_mm256_storeu_ps(res, acc0);
 			for (int i = 0; i < 8; i++)
 				distances[k + i] = (double) res[i];
+		}
+
+		int rem = count - k;
+		if (rem > 0)
+		{
+			__m256i mask = _mm256_load_si256((const __m256i *) soa_masks[rem]);
+			float res[8];
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int d = 0;
+
+			for (; d + 3 < dim; d += 4)
+			{
+				__m256 q0 = _mm256_set1_ps(q[d + 0]);
+				__m256 q1 = _mm256_set1_ps(q[d + 1]);
+				__m256 q2 = _mm256_set1_ps(q[d + 2]);
+				__m256 q3 = _mm256_set1_ps(q[d + 3]);
+
+				__m256 v0 = _mm256_maskload_ps(soa_values + (d + 0) * count + k, mask);
+				__m256 v1 = _mm256_maskload_ps(soa_values + (d + 1) * count + k, mask);
+				__m256 v2 = _mm256_maskload_ps(soa_values + (d + 2) * count + k, mask);
+				__m256 v3 = _mm256_maskload_ps(soa_values + (d + 3) * count + k, mask);
+
+				__m256 diff0 = _mm256_sub_ps(q0, v0);
+				__m256 diff1 = _mm256_sub_ps(q1, v1);
+				__m256 diff2 = _mm256_sub_ps(q2, v2);
+				__m256 diff3 = _mm256_sub_ps(q3, v3);
+
+				acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
+				acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
+				acc2 = _mm256_fmadd_ps(diff2, diff2, acc2);
+				acc3 = _mm256_fmadd_ps(diff3, diff3, acc3);
+			}
+
+			acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+			for (; d < dim; d++)
+			{
+				__m256 q_val = _mm256_set1_ps(q[d]);
+				__m256 v = _mm256_maskload_ps(soa_values + d * count + k, mask);
+				__m256 diff = _mm256_sub_ps(q_val, v);
+				acc0 = _mm256_fmadd_ps(diff, diff, acc0);
+			}
+
+			_mm256_storeu_ps(res, acc0);
+			for (int i = 0; i < rem; i++)
+				distances[k + i] = (double) res[i];
+			k = count;
 		}
 	}
 #endif
@@ -1988,6 +2051,50 @@ VectorBatchNegativeInnerProduct_SoA_InPlace(int dim, const float *q, const float
 			_mm256_storeu_ps(res, acc0);
 			for (int i = 0; i < 8; i++)
 				distances[k + i] = -(double) res[i];
+		}
+
+		int rem = count - k;
+		if (rem > 0)
+		{
+			__m256i mask = _mm256_load_si256((const __m256i *) soa_masks[rem]);
+			float res[8];
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int d = 0;
+
+			for (; d + 3 < dim; d += 4)
+			{
+				__m256 q0 = _mm256_set1_ps(q[d + 0]);
+				__m256 q1 = _mm256_set1_ps(q[d + 1]);
+				__m256 q2 = _mm256_set1_ps(q[d + 2]);
+				__m256 q3 = _mm256_set1_ps(q[d + 3]);
+
+				__m256 v0 = _mm256_maskload_ps(soa_values + (d + 0) * count + k, mask);
+				__m256 v1 = _mm256_maskload_ps(soa_values + (d + 1) * count + k, mask);
+				__m256 v2 = _mm256_maskload_ps(soa_values + (d + 2) * count + k, mask);
+				__m256 v3 = _mm256_maskload_ps(soa_values + (d + 3) * count + k, mask);
+
+				acc0 = _mm256_fmadd_ps(q0, v0, acc0);
+				acc1 = _mm256_fmadd_ps(q1, v1, acc1);
+				acc2 = _mm256_fmadd_ps(q2, v2, acc2);
+				acc3 = _mm256_fmadd_ps(q3, v3, acc3);
+			}
+
+			acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+			for (; d < dim; d++)
+			{
+				__m256 q_val = _mm256_set1_ps(q[d]);
+				__m256 v = _mm256_maskload_ps(soa_values + d * count + k, mask);
+				acc0 = _mm256_fmadd_ps(q_val, v, acc0);
+			}
+
+			_mm256_storeu_ps(res, acc0);
+			for (int i = 0; i < rem; i++)
+				distances[k + i] = -(double) res[i];
+			k = count;
 		}
 	}
 #endif
