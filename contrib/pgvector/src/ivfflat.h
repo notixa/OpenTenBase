@@ -306,6 +306,7 @@ typedef struct IvfflatScanOpaqueData
 	FmgrInfo   *normprocinfo;
 	Oid			collation;
 	Datum		(*distfunc) (FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2);
+	VectorBatchDistFunc batchdistfunc;
 
 	/* Lists */
 	pairingheap *listQueue;

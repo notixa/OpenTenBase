@@ -31,7 +31,7 @@ export OP="<->"
 export SIFT_DIR="$BENCH_HOME/l2"            # dataset dir (contains sift/*.fvecs)
 export CSV_DIR="$SIFT_DIR/csv"              # converted csv + truth + dim
 export DATASET_SRC="$SIFT_DIR"              # convert.py input
-export RESDIR="$BENCH_DIR/results"
+export RESDIR="${RESDIR:-$BENCH_DIR/results}"
 mkdir -p "$SIFT_DIR" "$CSV_DIR" "$RESDIR"
 
 export PATH="$PG_BIN:$PATH"

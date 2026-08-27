@@ -32,7 +32,7 @@ export DATASET_URL="http://ann-benchmarks.com/glove-100-angular.hdf5"
 export DATASET_FILE="$BENCH_HOME/cos/glove-100-angular.hdf5"
 export CSV_DIR="$BENCH_HOME/cos/csv"
 export DATASET_SRC="$DATASET_FILE"          # convert.py input (hdf5 file)
-export RESDIR="$BENCH_DIR/results"
+export RESDIR="${RESDIR:-$BENCH_DIR/results}"
 mkdir -p "$(dirname "$DATASET_FILE")" "$CSV_DIR" "$RESDIR"
 
 export PATH="$PG_BIN:$PATH"

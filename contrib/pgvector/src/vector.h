@@ -27,6 +27,14 @@ Vector	   *InitVector(int dim);
 void		PrintVector(char *msg, Vector * vector);
 int			vector_cmp_internal(Vector * a, Vector * b);
 
+typedef void (*VectorBatchDistFunc) (int dim, const float *ax, const float * const *bx, double *distances, int count);
+
+VectorBatchDistFunc VectorGetBatchDistFunc(PGFunction fn);
+void VectorBatchL2SquaredDistance(int dim, const float *ax, const float * const *bx, double *distances, int count);
+void VectorBatchL2Distance(int dim, const float *ax, const float * const *bx, double *distances, int count);
+void VectorBatchNegativeInnerProduct(int dim, const float *ax, const float * const *bx, double *distances, int count);
+void VectorBatchInnerProduct(int dim, const float *ax, const float * const *bx, double *distances, int count);
+
 /* TODO Move to better place */
 #if PG_VERSION_NUM >= 160000
 #define FUNCTION_PREFIX

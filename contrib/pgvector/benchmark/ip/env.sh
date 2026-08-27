@@ -32,7 +32,7 @@ export DATASET_URL="http://ann-benchmarks.com/lastfm-64-dot.hdf5"
 export DATASET_FILE="$BENCH_HOME/ip/lastfm-64-dot.hdf5"
 export CSV_DIR="$BENCH_HOME/ip/csv"
 export DATASET_SRC="$DATASET_FILE"          # convert.py input (hdf5 file)
-export RESDIR="$BENCH_DIR/results"
+export RESDIR="${RESDIR:-$BENCH_DIR/results}"
 mkdir -p "$(dirname "$DATASET_FILE")" "$CSV_DIR" "$RESDIR"
 
 export PATH="$PG_BIN:$PATH"

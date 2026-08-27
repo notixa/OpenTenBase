@@ -232,25 +232,34 @@ GetScanItems(IndexScanDesc scan, Datum value)
 				batch_count++;
 
 				if (batch_count == BATCH_SIZE || offno == maxoffno) {
-					double max_distance = DBL_MAX;
-					if (so->use_heap && so->heap_cur_size == so->heap_max_size) {
-						max_distance = so->heap_distances[0];
+					double distances[BATCH_SIZE];
+
+					if (so->batchdistfunc != NULL && DatumGetPointer(value) != NULL) {
+						const float *target_ptrs[BATCH_SIZE];
+						Vector *qvec = DatumGetVector(value);
+
+						for (int i = 0; i < batch_count; i++) {
+							Vector *v = DatumGetVector(batch_datums[i]);
+							target_ptrs[i] = v->x;
+						}
+
+						so->batchdistfunc(so->dimensions, qvec->x, target_ptrs, distances, batch_count);
+					} else {
+						for (int i = 0; i < batch_count; i++) {
+							distances[i] = DatumGetFloat8(so->distfunc(so->procinfo, so->collation, batch_datums[i], value));
+						}
 					}
 
-					for (int i = 0; i < batch_count; i++) {
-						/* 1-to-N SIMD would be invoked here. For now we use distfunc but pass early abandon threshold if supported. */
-						double distance = DatumGetFloat8(so->distfunc(so->procinfo, so->collation, batch_datums[i], value));
-						
-						if (so->use_heap) {
-							if (distance < max_distance || so->heap_cur_size < so->heap_max_size) {
-								ivfflat_heap_insert(so, distance, &batch_itups[i]->t_tid);
-								if (so->heap_cur_size == so->heap_max_size) {
-									max_distance = so->heap_distances[0]; /* Update threshold dynamically */
-								}
+					if (so->use_heap) {
+						for (int i = 0; i < batch_count; i++) {
+							if (so->heap_cur_size < so->heap_max_size || distances[i] < so->heap_distances[0]) {
+								ivfflat_heap_insert(so, distances[i], &batch_itups[i]->t_tid);
 							}
-						} else {
+						}
+					} else {
+						for (int i = 0; i < batch_count; i++) {
 							ExecClearTuple(slot);
-							slot->tts_values[0] = Float8GetDatum(distance);
+							slot->tts_values[0] = Float8GetDatum(distances[i]);
 							slot->tts_isnull[0] = false;
 							slot->tts_values[1] = PointerGetDatum(&batch_itups[i]->t_tid);
 							slot->tts_isnull[1] = false;
@@ -381,6 +390,7 @@ ivfflatbeginscan(Relation index, int nkeys, int norderbys)
 	so->procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
 	so->normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
 	so->collation = index->rd_indcollation[0];
+	so->batchdistfunc = VectorGetBatchDistFunc(so->procinfo->fn_addr);
 
 	so->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
 									   "Ivfflat scan temporary context",

@@ -126,7 +126,7 @@ if [ "$MODE" != "stat" ]; then
 
     echo ""
     echo "=== top hot symbols ==="
-    awk '/^#/{next} /^$/{next} {print}' "$OUTFILE.report.txt" | head -25
+    awk '/^#/{next} /^$/{next} {print}' "$OUTFILE.report.txt" | head -25 || true
 else
     log "done. stat output: $OUTFILE.stat.txt"
 fi
