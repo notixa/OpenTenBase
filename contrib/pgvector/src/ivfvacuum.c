@@ -92,12 +92,12 @@ ivfflatbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 				if (is_soa)
 				{
-					/* Find deleted tuples in SoA chunks */
+					/* Find deleted tuples in Packed AoS chunks */
 					for (offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
 					{
-						IvfflatSoAChunk chunk = (IvfflatSoAChunk) PageGetItem(page, PageGetItemId(page, offno));
-						ItemPointer tids = IvfflatSoAChunkGetTids(chunk);
-						float	   *values = IvfflatSoAChunkGetValues(chunk);
+						IvfflatPackedChunk chunk = (IvfflatPackedChunk) PageGetItem(page, PageGetItemId(page, offno));
+						ItemPointer tids = IvfflatPackedChunkGetTids(chunk);
+						float	   *values = IvfflatPackedChunkGetValues(chunk);
 						int			count = chunk->count;
 						int			dim = chunk->dim;
 						int			kept = 0;
@@ -125,24 +125,23 @@ ivfflatbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 							}
 							else
 							{
-								Size		new_chunksz = IvfflatSoAChunkSize(kept, dim);
-								IvfflatSoAChunk new_chunk = (IvfflatSoAChunk) palloc0(new_chunksz);
+								Size		new_chunksz = IvfflatPackedChunkSize(kept, dim);
+								IvfflatPackedChunk new_chunk = (IvfflatPackedChunk) palloc0(new_chunksz);
 								ItemPointer new_tids;
 								float	   *new_values;
 								int			cur = 0;
 
 								new_chunk->count = (uint16) kept;
 								new_chunk->dim = (uint16) dim;
-								new_tids = IvfflatSoAChunkGetTids(new_chunk);
-								new_values = IvfflatSoAChunkGetValues(new_chunk);
+								new_tids = IvfflatPackedChunkGetTids(new_chunk);
+								new_values = IvfflatPackedChunkGetValues(new_chunk);
 
 								for (int j = 0; j < count; j++)
 								{
 									if (!callback(&tids[j], callback_state))
 									{
 										new_tids[cur] = tids[j];
-										for (int d = 0; d < dim; d++)
-											new_values[d * kept + cur] = values[d * count + j];
+										memcpy(new_values + cur * dim, values + j * dim, dim * sizeof(float));
 										cur++;
 									}
 								}

@@ -277,6 +277,46 @@ typedef struct IvfflatListData
 
 typedef IvfflatListData * IvfflatList;
 
+typedef struct IvfflatPackedChunkData
+{
+	uint16		count;			/* Number of vectors in this chunk */
+	uint16		dim;			/* Dimension of the vectors */
+}			IvfflatPackedChunkData;
+
+typedef IvfflatPackedChunkData * IvfflatPackedChunk;
+
+static inline Size
+IvfflatPackedChunkSize(int count, int dim)
+{
+	return MAXALIGN(sizeof(IvfflatPackedChunkData) + count * sizeof(ItemPointerData)) +
+		MAXALIGN(count * dim * sizeof(float));
+}
+
+static inline ItemPointer
+IvfflatPackedChunkGetTids(IvfflatPackedChunk chunk)
+{
+	return (ItemPointer) ((char *) chunk + sizeof(IvfflatPackedChunkData));
+}
+
+static inline float *
+IvfflatPackedChunkGetValues(IvfflatPackedChunk chunk)
+{
+	return (float *) ((char *) chunk + MAXALIGN(sizeof(IvfflatPackedChunkData) + chunk->count * sizeof(ItemPointerData)));
+}
+
+static inline int
+IvfflatMaxPackedVecsPerPage(int dim)
+{
+	Size max_space = BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(IvfflatPageOpaqueData)) - sizeof(ItemIdData) - MAXALIGN(sizeof(IvfflatPackedChunkData));
+	Size per_vec = sizeof(ItemPointerData) + dim * sizeof(float);
+	int max_vecs = (int) (max_space / per_vec);
+	if (max_vecs > 64)
+		max_vecs = 64;
+	if (max_vecs < 1)
+		max_vecs = 1;
+	return max_vecs;
+}
+
 typedef struct IvfflatSoAChunkData
 {
 	uint16		count;			/* Number of vectors in this chunk */
@@ -324,6 +364,8 @@ typedef struct IvfflatScanList
 	double		distance;
 }			IvfflatScanList;
 
+typedef void (*VectorPackedBatchDistFunc_InPlace) (int dim, const float *q, const float *packed_values, double *distances, int count);
+
 typedef struct IvfflatScanOpaqueData
 {
 	const		IvfflatTypeInfo *typeInfo;
@@ -348,6 +390,7 @@ typedef struct IvfflatScanOpaqueData
 	Datum		(*distfunc) (FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2);
 	VectorBatchDistFunc batchdistfunc;
 	VectorSoABatchDistFunc_InPlace soa_inplace_distfunc;
+	VectorPackedBatchDistFunc_InPlace packed_inplace_distfunc;
 
 	/* Lists */
 	pairingheap *listQueue;

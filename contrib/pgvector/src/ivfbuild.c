@@ -291,7 +291,7 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
 		GenericXLogState *state;
 		BlockNumber startPage;
 		BlockNumber insertPage;
-		int			max_vecs = IvfflatMaxSoAVecsPerPage(buildstate->dimensions);
+		int			max_vecs = IvfflatMaxPackedVecsPerPage(buildstate->dimensions);
 
 		/* Can take a while, so ensure we can interrupt */
 		/* Needs to be called when no buffer locks are held */
@@ -302,12 +302,12 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
 
 		startPage = BufferGetBlockNumber(buf);
 
-		/* Get all tuples for list and write SoA chunks */
+		/* Get all tuples for list and write Packed AoS chunks */
 		while (list == i)
 		{
-			bool is_soa = (IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC) == NULL);
+			bool is_packed = (IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC) == NULL);
 
-			if (is_soa)
+			if (is_packed)
 			{
 				int			chunk_count = 0;
 				IndexTuple	chunk_itups[64];
@@ -321,15 +321,15 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
 
 				if (chunk_count > 0)
 				{
-					Size		chunksz = IvfflatSoAChunkSize(chunk_count, buildstate->dimensions);
-					IvfflatSoAChunk chunk = (IvfflatSoAChunk) palloc0(chunksz);
+					Size		chunksz = IvfflatPackedChunkSize(chunk_count, buildstate->dimensions);
+					IvfflatPackedChunk chunk = (IvfflatPackedChunk) palloc0(chunksz);
 					ItemPointer tids;
 					float	   *values;
 
 					chunk->count = (uint16) chunk_count;
 					chunk->dim = (uint16) buildstate->dimensions;
-					tids = IvfflatSoAChunkGetTids(chunk);
-					values = IvfflatSoAChunkGetValues(chunk);
+					tids = IvfflatPackedChunkGetTids(chunk);
+					values = IvfflatPackedChunkGetValues(chunk);
 
 					for (int j = 0; j < chunk_count; j++)
 					{
@@ -338,10 +338,7 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
 						Vector	   *v = DatumGetVector(val);
 
 						tids[j] = chunk_itups[j]->t_tid;
-						for (int d = 0; d < buildstate->dimensions; d++)
-						{
-							values[d * chunk_count + j] = v->x[d];
-						}
+						memcpy(values + j * buildstate->dimensions, v->x, buildstate->dimensions * sizeof(float));
 						pfree(chunk_itups[j]);
 					}
 
@@ -349,7 +346,7 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
 						IvfflatAppendPage(index, &buf, &page, &state, forkNum);
 
 					if (PageAddItem(page, (Item) chunk, chunksz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
-						elog(ERROR, "failed to add SoA chunk to \"%s\"", RelationGetRelationName(index));
+						elog(ERROR, "failed to add Packed AoS chunk to \"%s\"", RelationGetRelationName(index));
 
 					pfree(chunk);
 				}

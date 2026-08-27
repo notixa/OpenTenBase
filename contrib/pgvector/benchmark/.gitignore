@@ -10,6 +10,10 @@ cos/results_soa/
 ip/results_soa/
 l2/results_soa/
 
+cos/results_packed_aos/
+ip/results_packed_aos/
+l2/results_packed_aos/
+
 cos/*.log
 ip/*.log
 l2/*.log

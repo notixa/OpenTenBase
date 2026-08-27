@@ -2119,6 +2119,182 @@ VectorGetSoABatchDistFunc_InPlace(PGFunction fn)
 	return NULL;
 }
 
+void
+VectorBatchL2SquaredDistance_Packed_InPlace(int dim, const float *q, const float *packed_values, double *distances, int count)
+{
+	int k = 0;
+#if defined(__x86_64__) || defined(__i386__)
+	if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+	{
+		for (; k + 3 < count; k += 4)
+		{
+			const float *b0 = packed_values + (k + 0) * dim;
+			const float *b1 = packed_values + (k + 1) * dim;
+			const float *b2 = packed_values + (k + 2) * dim;
+			const float *b3 = packed_values + (k + 3) * dim;
+
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int i = 0;
+
+			for (; i + 7 < dim; i += 8)
+			{
+				__m256 q_val = _mm256_loadu_ps(q + i);
+
+				__m256 diff0 = _mm256_sub_ps(q_val, _mm256_loadu_ps(b0 + i));
+				__m256 diff1 = _mm256_sub_ps(q_val, _mm256_loadu_ps(b1 + i));
+				__m256 diff2 = _mm256_sub_ps(q_val, _mm256_loadu_ps(b2 + i));
+				__m256 diff3 = _mm256_sub_ps(q_val, _mm256_loadu_ps(b3 + i));
+
+				acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
+				acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
+				acc2 = _mm256_fmadd_ps(diff2, diff2, acc2);
+				acc3 = _mm256_fmadd_ps(diff3, diff3, acc3);
+			}
+
+			distances[k + 0] = (double) hsum256_ps(acc0);
+			distances[k + 1] = (double) hsum256_ps(acc1);
+			distances[k + 2] = (double) hsum256_ps(acc2);
+			distances[k + 3] = (double) hsum256_ps(acc3);
+
+			for (; i < dim; i++)
+			{
+				float q_val = q[i];
+				float d0 = q_val - b0[i];
+				float d1 = q_val - b1[i];
+				float d2 = q_val - b2[i];
+				float d3 = q_val - b3[i];
+				distances[k + 0] += (double) (d0 * d0);
+				distances[k + 1] += (double) (d1 * d1);
+				distances[k + 2] += (double) (d2 * d2);
+				distances[k + 3] += (double) (d3 * d3);
+			}
+		}
+
+		for (; k < count; k++)
+		{
+			const float *b = packed_values + k * dim;
+			__m256 acc = _mm256_setzero_ps();
+			double dist;
+			int i = 0;
+			for (; i + 7 < dim; i += 8)
+			{
+				__m256 diff = _mm256_sub_ps(_mm256_loadu_ps(q + i), _mm256_loadu_ps(b + i));
+				acc = _mm256_fmadd_ps(diff, diff, acc);
+			}
+			dist = (double) hsum256_ps(acc);
+			for (; i < dim; i++)
+			{
+				float diff = q[i] - b[i];
+				dist += (double) (diff * diff);
+			}
+			distances[k] = dist;
+		}
+		return;
+	}
+#endif
+	for (; k < count; k++)
+	{
+		const float *b = packed_values + k * dim;
+		double dist = 0.0;
+		for (int i = 0; i < dim; i++)
+		{
+			float diff = q[i] - b[i];
+			dist += (double) (diff * diff);
+		}
+		distances[k] = dist;
+	}
+}
+
+void
+VectorBatchNegativeInnerProduct_Packed_InPlace(int dim, const float *q, const float *packed_values, double *distances, int count)
+{
+	int k = 0;
+#if defined(__x86_64__) || defined(__i386__)
+	if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+	{
+		for (; k + 3 < count; k += 4)
+		{
+			const float *b0 = packed_values + (k + 0) * dim;
+			const float *b1 = packed_values + (k + 1) * dim;
+			const float *b2 = packed_values + (k + 2) * dim;
+			const float *b3 = packed_values + (k + 3) * dim;
+
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int i = 0;
+
+			for (; i + 7 < dim; i += 8)
+			{
+				__m256 q_val = _mm256_loadu_ps(q + i);
+
+				acc0 = _mm256_fmadd_ps(q_val, _mm256_loadu_ps(b0 + i), acc0);
+				acc1 = _mm256_fmadd_ps(q_val, _mm256_loadu_ps(b1 + i), acc1);
+				acc2 = _mm256_fmadd_ps(q_val, _mm256_loadu_ps(b2 + i), acc2);
+				acc3 = _mm256_fmadd_ps(q_val, _mm256_loadu_ps(b3 + i), acc3);
+			}
+
+			distances[k + 0] = -(double) hsum256_ps(acc0);
+			distances[k + 1] = -(double) hsum256_ps(acc1);
+			distances[k + 2] = -(double) hsum256_ps(acc2);
+			distances[k + 3] = -(double) hsum256_ps(acc3);
+
+			for (; i < dim; i++)
+			{
+				float q_val = q[i];
+				distances[k + 0] -= (double) (q_val * b0[i]);
+				distances[k + 1] -= (double) (q_val * b1[i]);
+				distances[k + 2] -= (double) (q_val * b2[i]);
+				distances[k + 3] -= (double) (q_val * b3[i]);
+			}
+		}
+
+		for (; k < count; k++)
+		{
+			const float *b = packed_values + k * dim;
+			__m256 acc = _mm256_setzero_ps();
+			double dist;
+			int i = 0;
+			for (; i + 7 < dim; i += 8)
+			{
+				acc = _mm256_fmadd_ps(_mm256_loadu_ps(q + i), _mm256_loadu_ps(b + i), acc);
+			}
+			dist = (double) hsum256_ps(acc);
+			for (; i < dim; i++)
+			{
+				dist += (double) (q[i] * b[i]);
+			}
+			distances[k] = -dist;
+		}
+		return;
+	}
+#endif
+	for (; k < count; k++)
+	{
+		const float *b = packed_values + k * dim;
+		double dist = 0.0;
+		for (int i = 0; i < dim; i++)
+		{
+			dist += (double) (q[i] * b[i]);
+		}
+		distances[k] = -dist;
+	}
+}
+
+void *
+VectorGetPackedBatchDistFunc_InPlace(PGFunction fn)
+{
+	if (fn == (PGFunction) vector_l2_squared_distance || fn == (PGFunction) l2_distance)
+		return VectorBatchL2SquaredDistance_Packed_InPlace;
+	if (fn == (PGFunction) vector_negative_inner_product || fn == (PGFunction) inner_product)
+		return VectorBatchNegativeInnerProduct_Packed_InPlace;
+	return NULL;
+}
+
 /*
  * Cosine similarity kernels. Runtime dispatch:
  *   x86: AVX512F -> AVX2+FMA -> SSE2 -> scalar (auto-vectorized)

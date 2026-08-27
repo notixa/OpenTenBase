@@ -114,7 +114,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 	if (is_soa)
 	{
 		vec = DatumGetVector(value);
-		max_vecs = IvfflatMaxSoAVecsPerPage(dimensions);
+		max_vecs = IvfflatMaxPackedVecsPerPage(dimensions);
 	}
 	else
 	{
@@ -137,7 +137,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 
 		if (is_soa)
 		{
-			IvfflatSoAChunk old_chunk = (IvfflatSoAChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
+			IvfflatPackedChunk old_chunk = (IvfflatPackedChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
 
 			if (old_chunk->count < max_vecs)
 				break;
@@ -195,27 +195,28 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 	{
 		if (PageIsEmpty(page))
 		{
-			Size		chunksz = IvfflatSoAChunkSize(1, dimensions);
-			IvfflatSoAChunk chunk = (IvfflatSoAChunk) palloc0(chunksz);
-			ItemPointer tids = IvfflatSoAChunkGetTids(chunk);
-			float	   *soa_vals = IvfflatSoAChunkGetValues(chunk);
+			Size		chunksz = IvfflatPackedChunkSize(1, dimensions);
+			IvfflatPackedChunk chunk = (IvfflatPackedChunk) palloc0(chunksz);
+			ItemPointer tids;
+			float	   *packed_vals;
 
 			chunk->count = 1;
 			chunk->dim = (uint16) dimensions;
+			tids = IvfflatPackedChunkGetTids(chunk);
+			packed_vals = IvfflatPackedChunkGetValues(chunk);
 			tids[0] = *heap_tid;
-			for (int d = 0; d < dimensions; d++)
-				soa_vals[d] = vec->x[d];
+			memcpy(packed_vals, vec->x, dimensions * sizeof(float));
 
 			if (PageAddItem(page, (Item) chunk, chunksz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
-				elog(ERROR, "failed to add SoA chunk to \"%s\"", RelationGetRelationName(index));
+				elog(ERROR, "failed to add Packed AoS chunk to \"%s\"", RelationGetRelationName(index));
 			pfree(chunk);
 		}
 		else
 		{
-			IvfflatSoAChunk old_chunk = (IvfflatSoAChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
+			IvfflatPackedChunk old_chunk = (IvfflatPackedChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
 			int			new_count = old_chunk->count + 1;
-			Size		new_chunksz = IvfflatSoAChunkSize(new_count, dimensions);
-			IvfflatSoAChunk new_chunk = (IvfflatSoAChunk) palloc0(new_chunksz);
+			Size		new_chunksz = IvfflatPackedChunkSize(new_count, dimensions);
+			IvfflatPackedChunk new_chunk = (IvfflatPackedChunk) palloc0(new_chunksz);
 			ItemPointer old_tids;
 			float	   *old_values;
 			ItemPointer new_tids;
@@ -224,23 +225,20 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 			new_chunk->count = (uint16) new_count;
 			new_chunk->dim = (uint16) dimensions;
 
-			old_tids = IvfflatSoAChunkGetTids(old_chunk);
-			old_values = IvfflatSoAChunkGetValues(old_chunk);
-			new_tids = IvfflatSoAChunkGetTids(new_chunk);
-			new_values = IvfflatSoAChunkGetValues(new_chunk);
+			old_tids = IvfflatPackedChunkGetTids(old_chunk);
+			old_values = IvfflatPackedChunkGetValues(old_chunk);
+			new_tids = IvfflatPackedChunkGetTids(new_chunk);
+			new_values = IvfflatPackedChunkGetValues(new_chunk);
 
 			memcpy(new_tids, old_tids, old_chunk->count * sizeof(ItemPointerData));
 			new_tids[old_chunk->count] = *heap_tid;
 
-			for (int d = 0; d < dimensions; d++)
-			{
-				memcpy(new_values + d * new_count, old_values + d * old_chunk->count, old_chunk->count * sizeof(float));
-				new_values[d * new_count + old_chunk->count] = vec->x[d];
-			}
+			memcpy(new_values, old_values, old_chunk->count * dimensions * sizeof(float));
+			memcpy(new_values + old_chunk->count * dimensions, vec->x, dimensions * sizeof(float));
 
 			PageIndexTupleDelete(page, FirstOffsetNumber);
 			if (PageAddItem(page, (Item) new_chunk, new_chunksz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
-				elog(ERROR, "failed to add expanded SoA chunk to \"%s\"", RelationGetRelationName(index));
+				elog(ERROR, "failed to add expanded Packed AoS chunk to \"%s\"", RelationGetRelationName(index));
 			pfree(new_chunk);
 		}
 	}

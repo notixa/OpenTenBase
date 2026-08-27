@@ -223,18 +223,18 @@ GetScanItems(IndexScanDesc scan, Datum value)
 				for (OffsetNumber offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
 				{
 					ItemId		itemid = PageGetItemId(page, offno);
-					IvfflatSoAChunk chunk = (IvfflatSoAChunk) PageGetItem(page, itemid);
+					IvfflatPackedChunk chunk = (IvfflatPackedChunk) PageGetItem(page, itemid);
 					int			chunk_count = chunk->count;
 					int			dim = chunk->dim;
-					ItemPointer tids = IvfflatSoAChunkGetTids(chunk);
-					float	   *values = IvfflatSoAChunkGetValues(chunk);
+					ItemPointer tids = IvfflatPackedChunkGetTids(chunk);
+					float	   *values = IvfflatPackedChunkGetValues(chunk);
 					double		distances[64];
 					Vector	   *qvec = (DatumGetPointer(value) != NULL) ? DatumGetVector(value) : NULL;
 
-					/* In-Place Zero-Copy SoA SIMD Distance Calculation on the shared buffer page */
-					if (so->soa_inplace_distfunc != NULL && qvec != NULL)
+					/* In-Place Zero-Copy Packed AoS SIMD Distance Calculation on the shared buffer page */
+					if (so->packed_inplace_distfunc != NULL && qvec != NULL)
 					{
-						so->soa_inplace_distfunc(dim, qvec->x, values, distances, chunk_count);
+						so->packed_inplace_distfunc(dim, qvec->x, values, distances, chunk_count);
 					}
 					else
 					{
@@ -425,6 +425,7 @@ ivfflatbeginscan(Relation index, int nkeys, int norderbys)
 	so->collation = index->rd_indcollation[0];
 	so->batchdistfunc = VectorGetBatchDistFunc(so->procinfo->fn_addr);
 	so->soa_inplace_distfunc = VectorGetSoABatchDistFunc_InPlace(so->procinfo->fn_addr);
+	so->packed_inplace_distfunc = (VectorPackedBatchDistFunc_InPlace) VectorGetPackedBatchDistFunc_InPlace(so->procinfo->fn_addr);
 
 	so->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
 									   "Ivfflat scan temporary context",
