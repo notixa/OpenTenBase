@@ -1649,6 +1649,369 @@ VectorGetBatchDistFunc(PGFunction fn)
 	return NULL;
 }
 
+#if defined(__x86_64__) || defined(__i386__)
+static void __attribute__((target("avx512f,avx512dq")))
+VectorBatchL2SquaredDistance_SoA_avx512f(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	float res[16];
+	__m512 acc = _mm512_setzero_ps();
+	for (int d = 0; d < dim; d++)
+	{
+		__m512 q_val = _mm512_set1_ps(q[d]);
+		__m512 v = _mm512_loadu_ps(soa_bx + d * 16);
+		__m512 diff = _mm512_sub_ps(q_val, v);
+		acc = _mm512_fmadd_ps(diff, diff, acc);
+	}
+	_mm512_storeu_ps(res, acc);
+	for (int i = 0; i < count; i++)
+		distances[i] = (double) res[i];
+}
+
+static void __attribute__((target("avx2,fma")))
+VectorBatchL2SquaredDistance_SoA_avx2(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	float res[16];
+	__m256 acc0 = _mm256_setzero_ps();
+	__m256 acc1 = _mm256_setzero_ps();
+	for (int d = 0; d < dim; d++)
+	{
+		__m256 q_val = _mm256_set1_ps(q[d]);
+		const float *slice = soa_bx + d * 16;
+		__m256 diff0 = _mm256_sub_ps(q_val, _mm256_loadu_ps(slice));
+		__m256 diff1 = _mm256_sub_ps(q_val, _mm256_loadu_ps(slice + 8));
+		acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
+		acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
+	}
+	_mm256_storeu_ps(res, acc0);
+	_mm256_storeu_ps(res + 8, acc1);
+	for (int i = 0; i < count; i++)
+		distances[i] = (double) res[i];
+}
+
+static void __attribute__((target("sse2")))
+VectorBatchL2SquaredDistance_SoA_sse2(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	float res[16];
+	__m128 acc0 = _mm_setzero_ps();
+	__m128 acc1 = _mm_setzero_ps();
+	__m128 acc2 = _mm_setzero_ps();
+	__m128 acc3 = _mm_setzero_ps();
+	for (int d = 0; d < dim; d++)
+	{
+		__m128 q_val = _mm_set1_ps(q[d]);
+		const float *slice = soa_bx + d * 16;
+		__m128 diff0 = _mm_sub_ps(q_val, _mm_loadu_ps(slice));
+		__m128 diff1 = _mm_sub_ps(q_val, _mm_loadu_ps(slice + 4));
+		__m128 diff2 = _mm_sub_ps(q_val, _mm_loadu_ps(slice + 8));
+		__m128 diff3 = _mm_sub_ps(q_val, _mm_loadu_ps(slice + 12));
+		acc0 = _mm_add_ps(acc0, _mm_mul_ps(diff0, diff0));
+		acc1 = _mm_add_ps(acc1, _mm_mul_ps(diff1, diff1));
+		acc2 = _mm_add_ps(acc2, _mm_mul_ps(diff2, diff2));
+		acc3 = _mm_add_ps(acc3, _mm_mul_ps(diff3, diff3));
+	}
+	_mm_storeu_ps(res, acc0);
+	_mm_storeu_ps(res + 4, acc1);
+	_mm_storeu_ps(res + 8, acc2);
+	_mm_storeu_ps(res + 12, acc3);
+	for (int i = 0; i < count; i++)
+		distances[i] = (double) res[i];
+}
+
+static void __attribute__((target("avx512f,avx512dq")))
+VectorBatchNegativeInnerProduct_SoA_avx512f(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	float res[16];
+	__m512 acc = _mm512_setzero_ps();
+	for (int d = 0; d < dim; d++)
+	{
+		__m512 q_val = _mm512_set1_ps(q[d]);
+		__m512 v = _mm512_loadu_ps(soa_bx + d * 16);
+		acc = _mm512_fmadd_ps(q_val, v, acc);
+	}
+	_mm512_storeu_ps(res, acc);
+	for (int i = 0; i < count; i++)
+		distances[i] = -(double) res[i];
+}
+
+static void __attribute__((target("avx2,fma")))
+VectorBatchNegativeInnerProduct_SoA_avx2(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	float res[16];
+	__m256 acc0 = _mm256_setzero_ps();
+	__m256 acc1 = _mm256_setzero_ps();
+	for (int d = 0; d < dim; d++)
+	{
+		__m256 q_val = _mm256_set1_ps(q[d]);
+		const float *slice = soa_bx + d * 16;
+		acc0 = _mm256_fmadd_ps(q_val, _mm256_loadu_ps(slice), acc0);
+		acc1 = _mm256_fmadd_ps(q_val, _mm256_loadu_ps(slice + 8), acc1);
+	}
+	_mm256_storeu_ps(res, acc0);
+	_mm256_storeu_ps(res + 8, acc1);
+	for (int i = 0; i < count; i++)
+		distances[i] = -(double) res[i];
+}
+
+static void __attribute__((target("sse2")))
+VectorBatchNegativeInnerProduct_SoA_sse2(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	float res[16];
+	__m128 acc0 = _mm_setzero_ps();
+	__m128 acc1 = _mm_setzero_ps();
+	__m128 acc2 = _mm_setzero_ps();
+	__m128 acc3 = _mm_setzero_ps();
+	for (int d = 0; d < dim; d++)
+	{
+		__m128 q_val = _mm_set1_ps(q[d]);
+		const float *slice = soa_bx + d * 16;
+		acc0 = _mm_add_ps(acc0, _mm_mul_ps(q_val, _mm_loadu_ps(slice)));
+		acc1 = _mm_add_ps(acc1, _mm_mul_ps(q_val, _mm_loadu_ps(slice + 4)));
+		acc2 = _mm_add_ps(acc2, _mm_mul_ps(q_val, _mm_loadu_ps(slice + 8)));
+		acc3 = _mm_add_ps(acc3, _mm_mul_ps(q_val, _mm_loadu_ps(slice + 12)));
+	}
+	_mm_storeu_ps(res, acc0);
+	_mm_storeu_ps(res + 4, acc1);
+	_mm_storeu_ps(res + 8, acc2);
+	_mm_storeu_ps(res + 12, acc3);
+	for (int i = 0; i < count; i++)
+		distances[i] = -(double) res[i];
+}
+#endif
+
+static void
+VectorBatchL2SquaredDistance_SoA_scalar(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	double acc[16] = {0};
+	for (int d = 0; d < dim; d++)
+	{
+		float q_val = q[d];
+		const float *slice = soa_bx + d * 16;
+		for (int i = 0; i < count; i++)
+		{
+			float diff = q_val - slice[i];
+			acc[i] += (double) (diff * diff);
+		}
+	}
+	for (int i = 0; i < count; i++)
+		distances[i] = acc[i];
+}
+
+static void
+VectorBatchNegativeInnerProduct_SoA_scalar(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	double acc[16] = {0};
+	for (int d = 0; d < dim; d++)
+	{
+		float q_val = q[d];
+		const float *slice = soa_bx + d * 16;
+		for (int i = 0; i < count; i++)
+			acc[i] += (double) (q_val * slice[i]);
+	}
+	for (int i = 0; i < count; i++)
+		distances[i] = -acc[i];
+}
+
+void
+VectorBatchL2SquaredDistance_SoA(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+#if defined(__x86_64__) || defined(__i386__)
+	if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512dq"))
+		VectorBatchL2SquaredDistance_SoA_avx512f(dim, q, soa_bx, distances, count);
+	else if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+		VectorBatchL2SquaredDistance_SoA_avx2(dim, q, soa_bx, distances, count);
+	else if (__builtin_cpu_supports("sse2"))
+		VectorBatchL2SquaredDistance_SoA_sse2(dim, q, soa_bx, distances, count);
+	else
+		VectorBatchL2SquaredDistance_SoA_scalar(dim, q, soa_bx, distances, count);
+#else
+	VectorBatchL2SquaredDistance_SoA_scalar(dim, q, soa_bx, distances, count);
+#endif
+}
+
+void
+VectorBatchNegativeInnerProduct_SoA(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+#if defined(__x86_64__) || defined(__i386__)
+	if (__builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512dq"))
+		VectorBatchNegativeInnerProduct_SoA_avx512f(dim, q, soa_bx, distances, count);
+	else if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+		VectorBatchNegativeInnerProduct_SoA_avx2(dim, q, soa_bx, distances, count);
+	else if (__builtin_cpu_supports("sse2"))
+		VectorBatchNegativeInnerProduct_SoA_sse2(dim, q, soa_bx, distances, count);
+	else
+		VectorBatchNegativeInnerProduct_SoA_scalar(dim, q, soa_bx, distances, count);
+#else
+	VectorBatchNegativeInnerProduct_SoA_scalar(dim, q, soa_bx, distances, count);
+#endif
+}
+
+void
+VectorBatchL2Distance_SoA(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	VectorBatchL2SquaredDistance_SoA(dim, q, soa_bx, distances, count);
+	for (int i = 0; i < count; i++)
+		distances[i] = sqrt(distances[i]);
+}
+
+void
+VectorBatchInnerProduct_SoA(int dim, const float *q, const float *soa_bx, double *distances, int count)
+{
+	VectorBatchNegativeInnerProduct_SoA(dim, q, soa_bx, distances, count);
+	for (int i = 0; i < count; i++)
+		distances[i] = -distances[i];
+}
+
+VectorSoABatchDistFunc
+VectorGetSoABatchDistFunc(PGFunction fn)
+{
+	if (fn == (PGFunction) vector_l2_squared_distance)
+		return VectorBatchL2SquaredDistance_SoA;
+	if (fn == (PGFunction) l2_distance)
+		return VectorBatchL2Distance_SoA;
+	if (fn == (PGFunction) vector_negative_inner_product)
+		return VectorBatchNegativeInnerProduct_SoA;
+	if (fn == (PGFunction) inner_product)
+		return VectorBatchInnerProduct_SoA;
+	return NULL;
+}
+
+void
+VectorBatchL2SquaredDistance_SoA_InPlace(int dim, const float *q, const float *soa_values, double *distances, int count)
+{
+	int k = 0;
+#if defined(__x86_64__) || defined(__i386__)
+	if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+	{
+		for (; k + 7 < count; k += 8)
+		{
+			float res[8];
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int d = 0;
+
+			for (; d + 3 < dim; d += 4)
+			{
+				__m256 q0 = _mm256_set1_ps(q[d + 0]);
+				__m256 q1 = _mm256_set1_ps(q[d + 1]);
+				__m256 q2 = _mm256_set1_ps(q[d + 2]);
+				__m256 q3 = _mm256_set1_ps(q[d + 3]);
+
+				const float *s0 = soa_values + (d + 0) * count + k;
+				const float *s1 = soa_values + (d + 1) * count + k;
+				const float *s2 = soa_values + (d + 2) * count + k;
+				const float *s3 = soa_values + (d + 3) * count + k;
+
+				__m256 diff0 = _mm256_sub_ps(q0, _mm256_loadu_ps(s0));
+				__m256 diff1 = _mm256_sub_ps(q1, _mm256_loadu_ps(s1));
+				__m256 diff2 = _mm256_sub_ps(q2, _mm256_loadu_ps(s2));
+				__m256 diff3 = _mm256_sub_ps(q3, _mm256_loadu_ps(s3));
+
+				acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
+				acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
+				acc2 = _mm256_fmadd_ps(diff2, diff2, acc2);
+				acc3 = _mm256_fmadd_ps(diff3, diff3, acc3);
+			}
+
+			acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+			for (; d < dim; d++)
+			{
+				__m256 q_val = _mm256_set1_ps(q[d]);
+				__m256 v = _mm256_loadu_ps(soa_values + d * count + k);
+				__m256 diff = _mm256_sub_ps(q_val, v);
+				acc0 = _mm256_fmadd_ps(diff, diff, acc0);
+			}
+
+			_mm256_storeu_ps(res, acc0);
+			for (int i = 0; i < 8; i++)
+				distances[k + i] = (double) res[i];
+		}
+	}
+#endif
+	for (; k < count; k++)
+	{
+		double dist = 0.0;
+		for (int d = 0; d < dim; d++)
+		{
+			float diff = q[d] - soa_values[d * count + k];
+			dist += (double) (diff * diff);
+		}
+		distances[k] = dist;
+	}
+}
+
+void
+VectorBatchNegativeInnerProduct_SoA_InPlace(int dim, const float *q, const float *soa_values, double *distances, int count)
+{
+	int k = 0;
+#if defined(__x86_64__) || defined(__i386__)
+	if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+	{
+		for (; k + 7 < count; k += 8)
+		{
+			float res[8];
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int d = 0;
+
+			for (; d + 3 < dim; d += 4)
+			{
+				__m256 q0 = _mm256_set1_ps(q[d + 0]);
+				__m256 q1 = _mm256_set1_ps(q[d + 1]);
+				__m256 q2 = _mm256_set1_ps(q[d + 2]);
+				__m256 q3 = _mm256_set1_ps(q[d + 3]);
+
+				const float *s0 = soa_values + (d + 0) * count + k;
+				const float *s1 = soa_values + (d + 1) * count + k;
+				const float *s2 = soa_values + (d + 2) * count + k;
+				const float *s3 = soa_values + (d + 3) * count + k;
+
+				acc0 = _mm256_fmadd_ps(q0, _mm256_loadu_ps(s0), acc0);
+				acc1 = _mm256_fmadd_ps(q1, _mm256_loadu_ps(s1), acc1);
+				acc2 = _mm256_fmadd_ps(q2, _mm256_loadu_ps(s2), acc2);
+				acc3 = _mm256_fmadd_ps(q3, _mm256_loadu_ps(s3), acc3);
+			}
+
+			acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+			for (; d < dim; d++)
+			{
+				__m256 q_val = _mm256_set1_ps(q[d]);
+				__m256 v = _mm256_loadu_ps(soa_values + d * count + k);
+				acc0 = _mm256_fmadd_ps(q_val, v, acc0);
+			}
+
+			_mm256_storeu_ps(res, acc0);
+			for (int i = 0; i < 8; i++)
+				distances[k + i] = -(double) res[i];
+		}
+	}
+#endif
+	for (; k < count; k++)
+	{
+		double dist = 0.0;
+		for (int d = 0; d < dim; d++)
+		{
+			dist += (double) (q[d] * soa_values[d * count + k]);
+		}
+		distances[k] = -dist;
+	}
+}
+
+VectorSoABatchDistFunc_InPlace
+VectorGetSoABatchDistFunc_InPlace(PGFunction fn)
+{
+	if (fn == (PGFunction) vector_l2_squared_distance || fn == (PGFunction) l2_distance)
+		return VectorBatchL2SquaredDistance_SoA_InPlace;
+	if (fn == (PGFunction) vector_negative_inner_product || fn == (PGFunction) inner_product)
+		return VectorBatchNegativeInnerProduct_SoA_InPlace;
+	return NULL;
+}
+
 /*
  * Cosine similarity kernels. Runtime dispatch:
  *   x86: AVX512F -> AVX2+FMA -> SSE2 -> scalar (auto-vectorized)

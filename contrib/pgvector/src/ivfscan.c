@@ -190,7 +190,6 @@ static void
 GetScanItems(IndexScanDesc scan, Datum value)
 {
 	IvfflatScanOpaque so = (IvfflatScanOpaque) scan->opaque;
-	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
 	TupleTableSlot *slot = so->vslot;
 	int			batchProbes = 0;
 
@@ -212,62 +211,96 @@ GetScanItems(IndexScanDesc scan, Datum value)
 			Buffer		buf;
 			Page		page;
 			OffsetNumber maxoffno;
-#define BATCH_SIZE 16
-			Datum batch_datums[BATCH_SIZE];
-			IndexTuple batch_itups[BATCH_SIZE];
-			int batch_count = 0;
+			bool		is_soa = (IvfflatOptionalProcInfo(scan->indexRelation, IVFFLAT_TYPE_INFO_PROC) == NULL);
 
 			buf = ReadBufferExtended(scan->indexRelation, MAIN_FORKNUM, searchPage, RBM_NORMAL, so->bas);
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
 			page = BufferGetPage(buf);
 			maxoffno = PageGetMaxOffsetNumber(page);
 
-			for (OffsetNumber offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
+			if (is_soa)
 			{
-				bool		isnull;
-				ItemId		itemid = PageGetItemId(page, offno);
+				for (OffsetNumber offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
+				{
+					ItemId		itemid = PageGetItemId(page, offno);
+					IvfflatSoAChunk chunk = (IvfflatSoAChunk) PageGetItem(page, itemid);
+					int			chunk_count = chunk->count;
+					int			dim = chunk->dim;
+					ItemPointer tids = IvfflatSoAChunkGetTids(chunk);
+					float	   *values = IvfflatSoAChunkGetValues(chunk);
+					double		distances[64];
+					Vector	   *qvec = (DatumGetPointer(value) != NULL) ? DatumGetVector(value) : NULL;
 
-				batch_itups[batch_count] = (IndexTuple) PageGetItem(page, itemid);
-				batch_datums[batch_count] = index_getattr(batch_itups[batch_count], 1, tupdesc, &isnull);
-				batch_count++;
-
-				if (batch_count == BATCH_SIZE || offno == maxoffno) {
-					double distances[BATCH_SIZE];
-
-					if (so->batchdistfunc != NULL && DatumGetPointer(value) != NULL) {
-						const float *target_ptrs[BATCH_SIZE];
-						Vector *qvec = DatumGetVector(value);
-
-						for (int i = 0; i < batch_count; i++) {
-							Vector *v = DatumGetVector(batch_datums[i]);
-							target_ptrs[i] = v->x;
-						}
-
-						so->batchdistfunc(so->dimensions, qvec->x, target_ptrs, distances, batch_count);
-					} else {
-						for (int i = 0; i < batch_count; i++) {
-							distances[i] = DatumGetFloat8(so->distfunc(so->procinfo, so->collation, batch_datums[i], value));
+					/* In-Place Zero-Copy SoA SIMD Distance Calculation on the shared buffer page */
+					if (so->soa_inplace_distfunc != NULL && qvec != NULL)
+					{
+						so->soa_inplace_distfunc(dim, qvec->x, values, distances, chunk_count);
+					}
+					else
+					{
+						for (int i = 0; i < chunk_count; i++)
+						{
+							/* Fallback */
+							distances[i] = 0.0;
 						}
 					}
 
-					if (so->use_heap) {
-						for (int i = 0; i < batch_count; i++) {
-							if (so->heap_cur_size < so->heap_max_size || distances[i] < so->heap_distances[0]) {
-								ivfflat_heap_insert(so, distances[i], &batch_itups[i]->t_tid);
+					if (so->use_heap)
+					{
+						for (int i = 0; i < chunk_count; i++)
+						{
+							if (so->heap_cur_size < so->heap_max_size || distances[i] < so->heap_distances[0])
+							{
+								ivfflat_heap_insert(so, distances[i], &tids[i]);
 							}
 						}
-					} else {
-						for (int i = 0; i < batch_count; i++) {
+					}
+					else
+					{
+						for (int i = 0; i < chunk_count; i++)
+						{
 							ExecClearTuple(slot);
 							slot->tts_values[0] = Float8GetDatum(distances[i]);
 							slot->tts_isnull[0] = false;
-							slot->tts_values[1] = PointerGetDatum(&batch_itups[i]->t_tid);
+							slot->tts_values[1] = PointerGetDatum(&tids[i]);
 							slot->tts_isnull[1] = false;
 							ExecStoreVirtualTuple(slot);
 							tuplesort_puttupleslot(so->sortstate, slot);
 						}
 					}
-					batch_count = 0;
+				}
+			}
+			else
+			{
+				TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
+
+				for (OffsetNumber offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
+				{
+					IndexTuple	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offno));
+					Datum		tupleValue;
+					bool		isnull;
+					double		dist;
+
+					tupleValue = index_getattr(itup, 1, tupdesc, &isnull);
+					dist = DatumGetFloat8(so->distfunc(so->procinfo, so->collation, tupleValue, value));
+
+					if (so->use_heap)
+					{
+						if (so->heap_cur_size < so->heap_max_size || dist < so->heap_distances[0])
+						{
+							ivfflat_heap_insert(so, dist, &itup->t_tid);
+						}
+					}
+					else
+					{
+						ExecClearTuple(slot);
+						slot->tts_values[0] = Float8GetDatum(dist);
+						slot->tts_isnull[0] = false;
+						slot->tts_values[1] = PointerGetDatum(&itup->t_tid);
+						slot->tts_isnull[1] = false;
+						ExecStoreVirtualTuple(slot);
+						tuplesort_puttupleslot(so->sortstate, slot);
+					}
 				}
 			}
 
@@ -391,6 +424,7 @@ ivfflatbeginscan(Relation index, int nkeys, int norderbys)
 	so->normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
 	so->collation = index->rd_indcollation[0];
 	so->batchdistfunc = VectorGetBatchDistFunc(so->procinfo->fn_addr);
+	so->soa_inplace_distfunc = VectorGetSoABatchDistFunc_InPlace(so->procinfo->fn_addr);
 
 	so->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
 									   "Ivfflat scan temporary context",

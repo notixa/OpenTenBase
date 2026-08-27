@@ -291,6 +291,7 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
 		GenericXLogState *state;
 		BlockNumber startPage;
 		BlockNumber insertPage;
+		int			max_vecs = IvfflatMaxSoAVecsPerPage(buildstate->dimensions);
 
 		/* Can take a while, so ensure we can interrupt */
 		/* Needs to be called when no buffer locks are held */
@@ -301,24 +302,72 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
 
 		startPage = BufferGetBlockNumber(buf);
 
-		/* Get all tuples for list */
+		/* Get all tuples for list and write SoA chunks */
 		while (list == i)
 		{
-			/* Check for free space */
-			Size		itemsz = MAXALIGN(IndexTupleSize(itup));
+			bool is_soa = (IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC) == NULL);
 
-			if (PageGetFreeSpace(page) < itemsz)
-				IvfflatAppendPage(index, &buf, &page, &state, forkNum);
+			if (is_soa)
+			{
+				int			chunk_count = 0;
+				IndexTuple	chunk_itups[64];
 
-			/* Add the item */
-			if (PageAddItem(page, (Item) itup, itemsz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
-				elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+				while (list == i && chunk_count < max_vecs)
+				{
+					chunk_itups[chunk_count++] = itup;
+					pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, ++inserted);
+					GetNextTuple(buildstate->sortstate, tupdesc, slot, &itup, &list);
+				}
 
-			pfree(itup);
+				if (chunk_count > 0)
+				{
+					Size		chunksz = IvfflatSoAChunkSize(chunk_count, buildstate->dimensions);
+					IvfflatSoAChunk chunk = (IvfflatSoAChunk) palloc0(chunksz);
+					ItemPointer tids;
+					float	   *values;
 
-			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, ++inserted);
+					chunk->count = (uint16) chunk_count;
+					chunk->dim = (uint16) buildstate->dimensions;
+					tids = IvfflatSoAChunkGetTids(chunk);
+					values = IvfflatSoAChunkGetValues(chunk);
 
-			GetNextTuple(buildstate->sortstate, tupdesc, slot, &itup, &list);
+					for (int j = 0; j < chunk_count; j++)
+					{
+						bool		isnull;
+						Datum		val = index_getattr(chunk_itups[j], 1, tupdesc, &isnull);
+						Vector	   *v = DatumGetVector(val);
+
+						tids[j] = chunk_itups[j]->t_tid;
+						for (int d = 0; d < buildstate->dimensions; d++)
+						{
+							values[d * chunk_count + j] = v->x[d];
+						}
+						pfree(chunk_itups[j]);
+					}
+
+					if (PageGetFreeSpace(page) < chunksz)
+						IvfflatAppendPage(index, &buf, &page, &state, forkNum);
+
+					if (PageAddItem(page, (Item) chunk, chunksz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
+						elog(ERROR, "failed to add SoA chunk to \"%s\"", RelationGetRelationName(index));
+
+					pfree(chunk);
+				}
+			}
+			else
+			{
+				Size		itemsz = MAXALIGN(IndexTupleSize(itup));
+
+				if (PageGetFreeSpace(page) < itemsz)
+					IvfflatAppendPage(index, &buf, &page, &state, forkNum);
+
+				if (PageAddItem(page, (Item) itup, itemsz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
+					elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+
+				pfree(itup);
+				pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, ++inserted);
+				GetNextTuple(buildstate->sortstate, tupdesc, slot, &itup, &list);
+			}
 		}
 
 		insertPage = BufferGetBlockNumber(buf);

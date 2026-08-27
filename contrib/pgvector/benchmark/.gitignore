@@ -6,6 +6,10 @@ cos/results_scan_opt/
 ip/results_scan_opt/
 l2/results_scan_opt/
 
+cos/results_soa/
+ip/results_soa/
+l2/results_soa/
+
 cos/*.log
 ip/*.log
 l2/*.log

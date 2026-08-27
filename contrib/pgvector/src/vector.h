@@ -28,12 +28,25 @@ void		PrintVector(char *msg, Vector * vector);
 int			vector_cmp_internal(Vector * a, Vector * b);
 
 typedef void (*VectorBatchDistFunc) (int dim, const float *ax, const float * const *bx, double *distances, int count);
+typedef void (*VectorSoABatchDistFunc) (int dim, const float *q, const float *soa_bx, double *distances, int count);
+typedef void (*VectorSoABatchDistFunc_InPlace) (int dim, const float *q, const float *soa_values, double *distances, int count);
 
 VectorBatchDistFunc VectorGetBatchDistFunc(PGFunction fn);
+VectorSoABatchDistFunc VectorGetSoABatchDistFunc(PGFunction fn);
+VectorSoABatchDistFunc_InPlace VectorGetSoABatchDistFunc_InPlace(PGFunction fn);
+
 void VectorBatchL2SquaredDistance(int dim, const float *ax, const float * const *bx, double *distances, int count);
 void VectorBatchL2Distance(int dim, const float *ax, const float * const *bx, double *distances, int count);
 void VectorBatchNegativeInnerProduct(int dim, const float *ax, const float * const *bx, double *distances, int count);
 void VectorBatchInnerProduct(int dim, const float *ax, const float * const *bx, double *distances, int count);
+
+void VectorBatchL2SquaredDistance_SoA(int dim, const float *q, const float *soa_bx, double *distances, int count);
+void VectorBatchL2Distance_SoA(int dim, const float *q, const float *soa_bx, double *distances, int count);
+void VectorBatchNegativeInnerProduct_SoA(int dim, const float *q, const float *soa_bx, double *distances, int count);
+void VectorBatchInnerProduct_SoA(int dim, const float *q, const float *soa_bx, double *distances, int count);
+
+void VectorBatchL2SquaredDistance_SoA_InPlace(int dim, const float *q, const float *soa_values, double *distances, int count);
+void VectorBatchNegativeInnerProduct_SoA_InPlace(int dim, const float *q, const float *soa_values, double *distances, int count);
 
 /* TODO Move to better place */
 #if PG_VERSION_NUM >= 160000

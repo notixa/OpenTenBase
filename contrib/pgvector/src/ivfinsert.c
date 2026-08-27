@@ -73,16 +73,20 @@ static void
 InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 {
 	const		IvfflatTypeInfo *typeInfo = IvfflatGetTypeInfo(index);
-	IndexTuple	itup;
 	Datum		value;
 	FmgrInfo   *normprocinfo;
 	Buffer		buf;
 	Page		page;
 	GenericXLogState *state;
-	Size		itemsz;
 	BlockNumber insertPage = InvalidBlockNumber;
 	ListInfo	listInfo;
 	BlockNumber originalInsertPage;
+	int			dimensions;
+	int			max_vecs = 0;
+	Vector	   *vec = NULL;
+	IndexTuple	itup = NULL;
+	Size		itemsz = 0;
+	bool		is_soa = (IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC) == NULL);
 
 	/* Detoast once for all calls */
 	value = PointerGetDatum(PG_DETOAST_DATUM(values[0]));
@@ -100,20 +104,24 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 	}
 
 	/* Ensure index is valid */
-	IvfflatGetMetaPageInfo(index, NULL, NULL);
+	IvfflatGetMetaPageInfo(index, NULL, &dimensions);
 
 	/* Find the insert page - sets the page and list info */
 	FindInsertPage(index, &value, &insertPage, &listInfo);
 	Assert(BlockNumberIsValid(insertPage));
 	originalInsertPage = insertPage;
 
-	/* Form tuple */
-	itup = index_form_tuple(RelationGetDescr(index), &value, isnull);
-	itup->t_tid = *heap_tid;
-
-	/* Get tuple size */
-	itemsz = MAXALIGN(IndexTupleSize(itup));
-	Assert(itemsz <= BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(IvfflatPageOpaqueData)) - sizeof(ItemIdData));
+	if (is_soa)
+	{
+		vec = DatumGetVector(value);
+		max_vecs = IvfflatMaxSoAVecsPerPage(dimensions);
+	}
+	else
+	{
+		itup = index_form_tuple(RelationGetDescr(index), &value, isnull);
+		itup->t_tid = *heap_tid;
+		itemsz = MAXALIGN(IndexTupleSize(itup));
+	}
 
 	/* Find a page to insert the item */
 	for (;;)
@@ -124,8 +132,21 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 		state = GenericXLogStart(index);
 		page = GenericXLogRegisterBuffer(state, buf, 0);
 
-		if (PageGetFreeSpace(page) >= itemsz)
+		if (PageIsEmpty(page))
 			break;
+
+		if (is_soa)
+		{
+			IvfflatSoAChunk old_chunk = (IvfflatSoAChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
+
+			if (old_chunk->count < max_vecs)
+				break;
+		}
+		else
+		{
+			if (PageGetFreeSpace(page) >= itemsz)
+				break;
+		}
 
 		insertPage = IvfflatPageGetOpaque(page)->nextblkno;
 
@@ -170,8 +191,64 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 	}
 
 	/* Add to next offset */
-	if (PageAddItem(page, (Item) itup, itemsz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
-		elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+	if (is_soa)
+	{
+		if (PageIsEmpty(page))
+		{
+			Size		chunksz = IvfflatSoAChunkSize(1, dimensions);
+			IvfflatSoAChunk chunk = (IvfflatSoAChunk) palloc0(chunksz);
+			ItemPointer tids = IvfflatSoAChunkGetTids(chunk);
+			float	   *soa_vals = IvfflatSoAChunkGetValues(chunk);
+
+			chunk->count = 1;
+			chunk->dim = (uint16) dimensions;
+			tids[0] = *heap_tid;
+			for (int d = 0; d < dimensions; d++)
+				soa_vals[d] = vec->x[d];
+
+			if (PageAddItem(page, (Item) chunk, chunksz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
+				elog(ERROR, "failed to add SoA chunk to \"%s\"", RelationGetRelationName(index));
+			pfree(chunk);
+		}
+		else
+		{
+			IvfflatSoAChunk old_chunk = (IvfflatSoAChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
+			int			new_count = old_chunk->count + 1;
+			Size		new_chunksz = IvfflatSoAChunkSize(new_count, dimensions);
+			IvfflatSoAChunk new_chunk = (IvfflatSoAChunk) palloc0(new_chunksz);
+			ItemPointer old_tids;
+			float	   *old_values;
+			ItemPointer new_tids;
+			float	   *new_values;
+
+			new_chunk->count = (uint16) new_count;
+			new_chunk->dim = (uint16) dimensions;
+
+			old_tids = IvfflatSoAChunkGetTids(old_chunk);
+			old_values = IvfflatSoAChunkGetValues(old_chunk);
+			new_tids = IvfflatSoAChunkGetTids(new_chunk);
+			new_values = IvfflatSoAChunkGetValues(new_chunk);
+
+			memcpy(new_tids, old_tids, old_chunk->count * sizeof(ItemPointerData));
+			new_tids[old_chunk->count] = *heap_tid;
+
+			for (int d = 0; d < dimensions; d++)
+			{
+				memcpy(new_values + d * new_count, old_values + d * old_chunk->count, old_chunk->count * sizeof(float));
+				new_values[d * new_count + old_chunk->count] = vec->x[d];
+			}
+
+			PageIndexTupleDelete(page, FirstOffsetNumber);
+			if (PageAddItem(page, (Item) new_chunk, new_chunksz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
+				elog(ERROR, "failed to add expanded SoA chunk to \"%s\"", RelationGetRelationName(index));
+			pfree(new_chunk);
+		}
+	}
+	else
+	{
+		if (PageAddItem(page, (Item) itup, itemsz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
+			elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+	}
 
 	IvfflatCommitBuffer(buf, state);
 

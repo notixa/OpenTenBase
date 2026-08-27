@@ -277,6 +277,46 @@ typedef struct IvfflatListData
 
 typedef IvfflatListData * IvfflatList;
 
+typedef struct IvfflatSoAChunkData
+{
+	uint16		count;			/* Number of vectors in this chunk */
+	uint16		dim;			/* Dimension of the vectors */
+}			IvfflatSoAChunkData;
+
+typedef IvfflatSoAChunkData * IvfflatSoAChunk;
+
+static inline Size
+IvfflatSoAChunkSize(int count, int dim)
+{
+	return MAXALIGN(sizeof(IvfflatSoAChunkData) + count * sizeof(ItemPointerData)) +
+		MAXALIGN(count * dim * sizeof(float));
+}
+
+static inline ItemPointer
+IvfflatSoAChunkGetTids(IvfflatSoAChunk chunk)
+{
+	return (ItemPointer) ((char *) chunk + sizeof(IvfflatSoAChunkData));
+}
+
+static inline float *
+IvfflatSoAChunkGetValues(IvfflatSoAChunk chunk)
+{
+	return (float *) ((char *) chunk + MAXALIGN(sizeof(IvfflatSoAChunkData) + chunk->count * sizeof(ItemPointerData)));
+}
+
+static inline int
+IvfflatMaxSoAVecsPerPage(int dim)
+{
+	Size max_space = BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(IvfflatPageOpaqueData)) - sizeof(ItemIdData) - MAXALIGN(sizeof(IvfflatSoAChunkData));
+	Size per_vec = sizeof(ItemPointerData) + dim * sizeof(float);
+	int max_vecs = (int) (max_space / per_vec);
+	if (max_vecs > 64)
+		max_vecs = 64;
+	if (max_vecs < 1)
+		max_vecs = 1;
+	return max_vecs;
+}
+
 typedef struct IvfflatScanList
 {
 	pairingheap_node ph_node;
@@ -307,6 +347,7 @@ typedef struct IvfflatScanOpaqueData
 	Oid			collation;
 	Datum		(*distfunc) (FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2);
 	VectorBatchDistFunc batchdistfunc;
+	VectorSoABatchDistFunc_InPlace soa_inplace_distfunc;
 
 	/* Lists */
 	pairingheap *listQueue;

@@ -70,6 +70,7 @@ ivfflatbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				OffsetNumber maxoffno;
 				OffsetNumber deletable[MaxOffsetNumber];
 				int			ndeletable;
+				bool		is_soa = (IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC) == NULL);
 
 				vacuum_delay_point();
 
@@ -89,32 +90,101 @@ ivfflatbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				maxoffno = PageGetMaxOffsetNumber(page);
 				ndeletable = 0;
 
-				/* Find deleted tuples */
-				for (offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
+				if (is_soa)
 				{
-					IndexTuple	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offno));
-					ItemPointer htup = &(itup->t_tid);
-
-					if (callback(htup, callback_state))
+					/* Find deleted tuples in SoA chunks */
+					for (offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
 					{
-						deletable[ndeletable++] = offno;
-						stats->tuples_removed++;
+						IvfflatSoAChunk chunk = (IvfflatSoAChunk) PageGetItem(page, PageGetItemId(page, offno));
+						ItemPointer tids = IvfflatSoAChunkGetTids(chunk);
+						float	   *values = IvfflatSoAChunkGetValues(chunk);
+						int			count = chunk->count;
+						int			dim = chunk->dim;
+						int			kept = 0;
+						bool		has_deleted = false;
+
+						for (int j = 0; j < count; j++)
+						{
+							if (callback(&tids[j], callback_state))
+							{
+								stats->tuples_removed++;
+								has_deleted = true;
+							}
+							else
+							{
+								stats->num_index_tuples++;
+								kept++;
+							}
+						}
+
+						if (has_deleted)
+						{
+							if (kept == 0)
+							{
+								deletable[ndeletable++] = offno;
+							}
+							else
+							{
+								Size		new_chunksz = IvfflatSoAChunkSize(kept, dim);
+								IvfflatSoAChunk new_chunk = (IvfflatSoAChunk) palloc0(new_chunksz);
+								ItemPointer new_tids;
+								float	   *new_values;
+								int			cur = 0;
+
+								new_chunk->count = (uint16) kept;
+								new_chunk->dim = (uint16) dim;
+								new_tids = IvfflatSoAChunkGetTids(new_chunk);
+								new_values = IvfflatSoAChunkGetValues(new_chunk);
+
+								for (int j = 0; j < count; j++)
+								{
+									if (!callback(&tids[j], callback_state))
+									{
+										new_tids[cur] = tids[j];
+										for (int d = 0; d < dim; d++)
+											new_values[d * kept + cur] = values[d * count + j];
+										cur++;
+									}
+								}
+
+								PageIndexTupleDelete(page, offno);
+								PageAddItem(page, (Item) new_chunk, new_chunksz, offno, false, false);
+								pfree(new_chunk);
+							}
+						}
 					}
-					else
-						stats->num_index_tuples++;
+				}
+				else
+				{
+					for (offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
+					{
+						IndexTuple	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offno));
+						ItemPointer htup = &(itup->t_tid);
+
+						if (callback(htup, callback_state))
+						{
+							deletable[ndeletable++] = offno;
+							stats->tuples_removed++;
+						}
+						else
+							stats->num_index_tuples++;
+					}
 				}
 
 				/* Set to first free page */
 				/* Must be set before searchPage is updated */
-				if (!BlockNumberIsValid(insertPage) && ndeletable > 0)
+				if (!BlockNumberIsValid(insertPage) && (ndeletable > 0 || stats->tuples_removed > 0))
 					insertPage = searchPage;
 
 				searchPage = IvfflatPageGetOpaque(page)->nextblkno;
 
 				if (ndeletable > 0)
 				{
-					/* Delete tuples */
 					PageIndexMultiDelete(page, deletable, ndeletable);
+					GenericXLogFinish(state);
+				}
+				else if (stats->tuples_removed > 0)
+				{
 					GenericXLogFinish(state);
 				}
 				else
