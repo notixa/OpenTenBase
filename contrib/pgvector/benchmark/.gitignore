@@ -14,6 +14,10 @@ cos/results_packed_aos/
 ip/results_packed_aos/
 l2/results_packed_aos/
 
+cos/results_aosoa/
+ip/results_aosoa/
+l2/results_aosoa/
+
 cos/*.log
 ip/*.log
 l2/*.log

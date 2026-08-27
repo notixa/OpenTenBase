@@ -2295,6 +2295,286 @@ VectorGetPackedBatchDistFunc_InPlace(PGFunction fn)
 	return NULL;
 }
 
+void
+VectorBatchL2SquaredDistance_AoSoA_InPlace(int dim, const float *q, const float *aosoa_values, double *distances, int count)
+{
+	int full_tiles = count / 8;
+	int rem = count % 8;
+	int k = 0;
+
+#if defined(__x86_64__) || defined(__i386__)
+	if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+	{
+		for (int t = 0; t < full_tiles; t++)
+		{
+			const float *tile = aosoa_values + t * (8 * dim);
+			float res[8];
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int d = 0;
+
+			for (; d + 3 < dim; d += 4)
+			{
+				__m256 q0 = _mm256_set1_ps(q[d + 0]);
+				__m256 q1 = _mm256_set1_ps(q[d + 1]);
+				__m256 q2 = _mm256_set1_ps(q[d + 2]);
+				__m256 q3 = _mm256_set1_ps(q[d + 3]);
+
+				__m256 v0 = _mm256_loadu_ps(tile + (d + 0) * 8);
+				__m256 v1 = _mm256_loadu_ps(tile + (d + 1) * 8);
+				__m256 v2 = _mm256_loadu_ps(tile + (d + 2) * 8);
+				__m256 v3 = _mm256_loadu_ps(tile + (d + 3) * 8);
+
+				__m256 diff0 = _mm256_sub_ps(q0, v0);
+				__m256 diff1 = _mm256_sub_ps(q1, v1);
+				__m256 diff2 = _mm256_sub_ps(q2, v2);
+				__m256 diff3 = _mm256_sub_ps(q3, v3);
+
+				acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
+				acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
+				acc2 = _mm256_fmadd_ps(diff2, diff2, acc2);
+				acc3 = _mm256_fmadd_ps(diff3, diff3, acc3);
+			}
+
+			acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+			for (; d < dim; d++)
+			{
+				__m256 q_val = _mm256_set1_ps(q[d]);
+				__m256 v = _mm256_loadu_ps(tile + d * 8);
+				__m256 diff = _mm256_sub_ps(q_val, v);
+				acc0 = _mm256_fmadd_ps(diff, diff, acc0);
+			}
+
+			_mm256_storeu_ps(res, acc0);
+			for (int i = 0; i < 8; i++)
+				distances[k + i] = (double) res[i];
+			k += 8;
+		}
+
+		if (rem > 0)
+		{
+			const float *rem_tile = aosoa_values + full_tiles * (8 * dim);
+			__m256i mask = _mm256_load_si256((const __m256i *) soa_masks[rem]);
+			float res[8];
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int d = 0;
+
+			for (; d + 3 < dim; d += 4)
+			{
+				__m256 q0 = _mm256_set1_ps(q[d + 0]);
+				__m256 q1 = _mm256_set1_ps(q[d + 1]);
+				__m256 q2 = _mm256_set1_ps(q[d + 2]);
+				__m256 q3 = _mm256_set1_ps(q[d + 3]);
+
+				__m256 v0 = _mm256_maskload_ps(rem_tile + (d + 0) * rem, mask);
+				__m256 v1 = _mm256_maskload_ps(rem_tile + (d + 1) * rem, mask);
+				__m256 v2 = _mm256_maskload_ps(rem_tile + (d + 2) * rem, mask);
+				__m256 v3 = _mm256_maskload_ps(rem_tile + (d + 3) * rem, mask);
+
+				__m256 diff0 = _mm256_sub_ps(q0, v0);
+				__m256 diff1 = _mm256_sub_ps(q1, v1);
+				__m256 diff2 = _mm256_sub_ps(q2, v2);
+				__m256 diff3 = _mm256_sub_ps(q3, v3);
+
+				acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
+				acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
+				acc2 = _mm256_fmadd_ps(diff2, diff2, acc2);
+				acc3 = _mm256_fmadd_ps(diff3, diff3, acc3);
+			}
+
+			acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+			for (; d < dim; d++)
+			{
+				__m256 q_val = _mm256_set1_ps(q[d]);
+				__m256 v = _mm256_maskload_ps(rem_tile + d * rem, mask);
+				__m256 diff = _mm256_sub_ps(q_val, v);
+				acc0 = _mm256_fmadd_ps(diff, diff, acc0);
+			}
+
+			_mm256_storeu_ps(res, acc0);
+			for (int i = 0; i < rem; i++)
+				distances[k + i] = (double) res[i];
+			return;
+		}
+		return;
+	}
+#endif
+	for (int t = 0; t < full_tiles; t++)
+	{
+		const float *tile = aosoa_values + t * (8 * dim);
+		for (int j = 0; j < 8; j++)
+		{
+			double dist = 0.0;
+			for (int d = 0; d < dim; d++)
+			{
+				float diff = q[d] - tile[d * 8 + j];
+				dist += (double) (diff * diff);
+			}
+			distances[k + j] = dist;
+		}
+		k += 8;
+	}
+	if (rem > 0)
+	{
+		const float *rem_tile = aosoa_values + full_tiles * (8 * dim);
+		for (int j = 0; j < rem; j++)
+		{
+			double dist = 0.0;
+			for (int d = 0; d < dim; d++)
+			{
+				float diff = q[d] - rem_tile[d * rem + j];
+				dist += (double) (diff * diff);
+			}
+			distances[k + j] = dist;
+		}
+	}
+}
+
+void
+VectorBatchNegativeInnerProduct_AoSoA_InPlace(int dim, const float *q, const float *aosoa_values, double *distances, int count)
+{
+	int full_tiles = count / 8;
+	int rem = count % 8;
+	int k = 0;
+
+#if defined(__x86_64__) || defined(__i386__)
+	if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))
+	{
+		for (int t = 0; t < full_tiles; t++)
+		{
+			const float *tile = aosoa_values + t * (8 * dim);
+			float res[8];
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int d = 0;
+
+			for (; d + 3 < dim; d += 4)
+			{
+				__m256 q0 = _mm256_set1_ps(q[d + 0]);
+				__m256 q1 = _mm256_set1_ps(q[d + 1]);
+				__m256 q2 = _mm256_set1_ps(q[d + 2]);
+				__m256 q3 = _mm256_set1_ps(q[d + 3]);
+
+				__m256 v0 = _mm256_loadu_ps(tile + (d + 0) * 8);
+				__m256 v1 = _mm256_loadu_ps(tile + (d + 1) * 8);
+				__m256 v2 = _mm256_loadu_ps(tile + (d + 2) * 8);
+				__m256 v3 = _mm256_loadu_ps(tile + (d + 3) * 8);
+
+				acc0 = _mm256_fmadd_ps(q0, v0, acc0);
+				acc1 = _mm256_fmadd_ps(q1, v1, acc1);
+				acc2 = _mm256_fmadd_ps(q2, v2, acc2);
+				acc3 = _mm256_fmadd_ps(q3, v3, acc3);
+			}
+
+			acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+			for (; d < dim; d++)
+			{
+				__m256 q_val = _mm256_set1_ps(q[d]);
+				__m256 v = _mm256_loadu_ps(tile + d * 8);
+				acc0 = _mm256_fmadd_ps(q_val, v, acc0);
+			}
+
+			_mm256_storeu_ps(res, acc0);
+			for (int i = 0; i < 8; i++)
+				distances[k + i] = -(double) res[i];
+			k += 8;
+		}
+
+		if (rem > 0)
+		{
+			const float *rem_tile = aosoa_values + full_tiles * (8 * dim);
+			__m256i mask = _mm256_load_si256((const __m256i *) soa_masks[rem]);
+			float res[8];
+			__m256 acc0 = _mm256_setzero_ps();
+			__m256 acc1 = _mm256_setzero_ps();
+			__m256 acc2 = _mm256_setzero_ps();
+			__m256 acc3 = _mm256_setzero_ps();
+			int d = 0;
+
+			for (; d + 3 < dim; d += 4)
+			{
+				__m256 q0 = _mm256_set1_ps(q[d + 0]);
+				__m256 q1 = _mm256_set1_ps(q[d + 1]);
+				__m256 q2 = _mm256_set1_ps(q[d + 2]);
+				__m256 q3 = _mm256_set1_ps(q[d + 3]);
+
+				__m256 v0 = _mm256_maskload_ps(rem_tile + (d + 0) * rem, mask);
+				__m256 v1 = _mm256_maskload_ps(rem_tile + (d + 1) * rem, mask);
+				__m256 v2 = _mm256_maskload_ps(rem_tile + (d + 2) * rem, mask);
+				__m256 v3 = _mm256_maskload_ps(rem_tile + (d + 3) * rem, mask);
+
+				acc0 = _mm256_fmadd_ps(q0, v0, acc0);
+				acc1 = _mm256_fmadd_ps(q1, v1, acc1);
+				acc2 = _mm256_fmadd_ps(q2, v2, acc2);
+				acc3 = _mm256_fmadd_ps(q3, v3, acc3);
+			}
+
+			acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+
+			for (; d < dim; d++)
+			{
+				__m256 q_val = _mm256_set1_ps(q[d]);
+				__m256 v = _mm256_maskload_ps(rem_tile + d * rem, mask);
+				acc0 = _mm256_fmadd_ps(q_val, v, acc0);
+			}
+
+			_mm256_storeu_ps(res, acc0);
+			for (int i = 0; i < rem; i++)
+				distances[k + i] = -(double) res[i];
+			return;
+		}
+		return;
+	}
+#endif
+	for (int t = 0; t < full_tiles; t++)
+	{
+		const float *tile = aosoa_values + t * (8 * dim);
+		for (int j = 0; j < 8; j++)
+		{
+			double dist = 0.0;
+			for (int d = 0; d < dim; d++)
+			{
+				dist += (double) (q[d] * tile[d * 8 + j]);
+			}
+			distances[k + j] = -dist;
+		}
+		k += 8;
+	}
+	if (rem > 0)
+	{
+		const float *rem_tile = aosoa_values + full_tiles * (8 * dim);
+		for (int j = 0; j < rem; j++)
+		{
+			double dist = 0.0;
+			for (int d = 0; d < dim; d++)
+			{
+				dist += (double) (q[d] * rem_tile[d * rem + j]);
+			}
+			distances[k + j] = -dist;
+		}
+	}
+}
+
+void *
+VectorGetAoSoABatchDistFunc_InPlace(PGFunction fn)
+{
+	if (fn == (PGFunction) vector_l2_squared_distance || fn == (PGFunction) l2_distance)
+		return VectorBatchL2SquaredDistance_AoSoA_InPlace;
+	if (fn == (PGFunction) vector_negative_inner_product || fn == (PGFunction) inner_product)
+		return VectorBatchNegativeInnerProduct_AoSoA_InPlace;
+	return NULL;
+}
+
 /*
  * Cosine similarity kernels. Runtime dispatch:
  *   x86: AVX512F -> AVX2+FMA -> SSE2 -> scalar (auto-vectorized)

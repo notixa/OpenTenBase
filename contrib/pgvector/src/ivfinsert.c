@@ -114,7 +114,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 	if (is_soa)
 	{
 		vec = DatumGetVector(value);
-		max_vecs = IvfflatMaxPackedVecsPerPage(dimensions);
+		max_vecs = IvfflatMaxAoSoAVecsPerPage(dimensions);
 	}
 	else
 	{
@@ -137,7 +137,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 
 		if (is_soa)
 		{
-			IvfflatPackedChunk old_chunk = (IvfflatPackedChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
+			IvfflatAoSoAChunk old_chunk = (IvfflatAoSoAChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
 
 			if (old_chunk->count < max_vecs)
 				break;
@@ -195,50 +195,106 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 	{
 		if (PageIsEmpty(page))
 		{
-			Size		chunksz = IvfflatPackedChunkSize(1, dimensions);
-			IvfflatPackedChunk chunk = (IvfflatPackedChunk) palloc0(chunksz);
+			Size		chunksz = IvfflatAoSoAChunkSize(1, dimensions);
+			IvfflatAoSoAChunk chunk = (IvfflatAoSoAChunk) palloc0(chunksz);
 			ItemPointer tids;
-			float	   *packed_vals;
+			float	   *aosoa_vals;
 
 			chunk->count = 1;
 			chunk->dim = (uint16) dimensions;
-			tids = IvfflatPackedChunkGetTids(chunk);
-			packed_vals = IvfflatPackedChunkGetValues(chunk);
+			tids = IvfflatAoSoAChunkGetTids(chunk);
+			aosoa_vals = IvfflatAoSoAChunkGetValues(chunk);
 			tids[0] = *heap_tid;
-			memcpy(packed_vals, vec->x, dimensions * sizeof(float));
+			for (int d = 0; d < dimensions; d++)
+				aosoa_vals[d] = vec->x[d];
 
 			if (PageAddItem(page, (Item) chunk, chunksz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
-				elog(ERROR, "failed to add Packed AoS chunk to \"%s\"", RelationGetRelationName(index));
+				elog(ERROR, "failed to add AoSoA chunk to \"%s\"", RelationGetRelationName(index));
 			pfree(chunk);
 		}
 		else
 		{
-			IvfflatPackedChunk old_chunk = (IvfflatPackedChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
-			int			new_count = old_chunk->count + 1;
-			Size		new_chunksz = IvfflatPackedChunkSize(new_count, dimensions);
-			IvfflatPackedChunk new_chunk = (IvfflatPackedChunk) palloc0(new_chunksz);
+			IvfflatAoSoAChunk old_chunk = (IvfflatAoSoAChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
+			int			old_count = old_chunk->count;
+			int			new_count = old_count + 1;
+			Size		new_chunksz = IvfflatAoSoAChunkSize(new_count, dimensions);
+			IvfflatAoSoAChunk new_chunk = (IvfflatAoSoAChunk) palloc0(new_chunksz);
 			ItemPointer old_tids;
 			float	   *old_values;
 			ItemPointer new_tids;
 			float	   *new_values;
+			int			old_full = old_count / 8;
+			int			old_rem = old_count % 8;
+			int			new_full = new_count / 8;
+			int			new_rem = new_count % 8;
+			float	   *tmp_vecs = (float *) palloc(new_count * dimensions * sizeof(float));
 
 			new_chunk->count = (uint16) new_count;
 			new_chunk->dim = (uint16) dimensions;
 
-			old_tids = IvfflatPackedChunkGetTids(old_chunk);
-			old_values = IvfflatPackedChunkGetValues(old_chunk);
-			new_tids = IvfflatPackedChunkGetTids(new_chunk);
-			new_values = IvfflatPackedChunkGetValues(new_chunk);
+			old_tids = IvfflatAoSoAChunkGetTids(old_chunk);
+			old_values = IvfflatAoSoAChunkGetValues(old_chunk);
+			new_tids = IvfflatAoSoAChunkGetTids(new_chunk);
+			new_values = IvfflatAoSoAChunkGetValues(new_chunk);
 
-			memcpy(new_tids, old_tids, old_chunk->count * sizeof(ItemPointerData));
-			new_tids[old_chunk->count] = *heap_tid;
+			/* Copy TIDs */
+			memcpy(new_tids, old_tids, old_count * sizeof(ItemPointerData));
+			new_tids[old_count] = *heap_tid;
 
-			memcpy(new_values, old_values, old_chunk->count * dimensions * sizeof(float));
-			memcpy(new_values + old_chunk->count * dimensions, vec->x, dimensions * sizeof(float));
+			/* Unpack old vectors */
+			for (int t = 0; t < old_full; t++)
+			{
+				const float *tile = old_values + t * (8 * dimensions);
+				for (int j = 0; j < 8; j++)
+				{
+					int vec_idx = t * 8 + j;
+					float *dst = tmp_vecs + vec_idx * dimensions;
+					for (int d = 0; d < dimensions; d++)
+						dst[d] = tile[d * 8 + j];
+				}
+			}
+			if (old_rem > 0)
+			{
+				const float *rem_tile = old_values + old_full * (8 * dimensions);
+				for (int j = 0; j < old_rem; j++)
+				{
+					int vec_idx = old_full * 8 + j;
+					float *dst = tmp_vecs + vec_idx * dimensions;
+					for (int d = 0; d < dimensions; d++)
+						dst[d] = rem_tile[d * old_rem + j];
+				}
+			}
+			/* Append new vector */
+			memcpy(tmp_vecs + old_count * dimensions, vec->x, dimensions * sizeof(float));
+
+			/* Repack into new AoSoA chunk */
+			for (int t = 0; t < new_full; t++)
+			{
+				float *tile = new_values + t * (8 * dimensions);
+				for (int j = 0; j < 8; j++)
+				{
+					int vec_idx = t * 8 + j;
+					const float *src = tmp_vecs + vec_idx * dimensions;
+					for (int d = 0; d < dimensions; d++)
+						tile[d * 8 + j] = src[d];
+				}
+			}
+			if (new_rem > 0)
+			{
+				float *rem_tile = new_values + new_full * (8 * dimensions);
+				for (int j = 0; j < new_rem; j++)
+				{
+					int vec_idx = new_full * 8 + j;
+					const float *src = tmp_vecs + vec_idx * dimensions;
+					for (int d = 0; d < dimensions; d++)
+						rem_tile[d * new_rem + j] = src[d];
+				}
+			}
+			pfree(tmp_vecs);
 
 			PageIndexTupleDelete(page, FirstOffsetNumber);
 			if (PageAddItem(page, (Item) new_chunk, new_chunksz, InvalidOffsetNumber, false, false) == InvalidOffsetNumber)
-				elog(ERROR, "failed to add expanded Packed AoS chunk to \"%s\"", RelationGetRelationName(index));
+				elog(ERROR, "failed to add expanded AoSoA chunk to \"%s\"", RelationGetRelationName(index));
 			pfree(new_chunk);
 		}
 	}

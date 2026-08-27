@@ -277,6 +277,46 @@ typedef struct IvfflatListData
 
 typedef IvfflatListData * IvfflatList;
 
+typedef struct IvfflatAoSoAChunkData
+{
+	uint16		count;			/* Number of vectors in this chunk */
+	uint16		dim;			/* Dimension of the vectors */
+}			IvfflatAoSoAChunkData;
+
+typedef IvfflatAoSoAChunkData * IvfflatAoSoAChunk;
+
+static inline Size
+IvfflatAoSoAChunkSize(int count, int dim)
+{
+	return MAXALIGN(sizeof(IvfflatAoSoAChunkData) + count * sizeof(ItemPointerData)) +
+		MAXALIGN(count * dim * sizeof(float));
+}
+
+static inline ItemPointer
+IvfflatAoSoAChunkGetTids(IvfflatAoSoAChunk chunk)
+{
+	return (ItemPointer) ((char *) chunk + sizeof(IvfflatAoSoAChunkData));
+}
+
+static inline float *
+IvfflatAoSoAChunkGetValues(IvfflatAoSoAChunk chunk)
+{
+	return (float *) ((char *) chunk + MAXALIGN(sizeof(IvfflatAoSoAChunkData) + chunk->count * sizeof(ItemPointerData)));
+}
+
+static inline int
+IvfflatMaxAoSoAVecsPerPage(int dim)
+{
+	Size max_space = BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(IvfflatPageOpaqueData)) - sizeof(ItemIdData) - MAXALIGN(sizeof(IvfflatAoSoAChunkData));
+	Size per_vec = sizeof(ItemPointerData) + dim * sizeof(float);
+	int max_vecs = (int) (max_space / per_vec);
+	if (max_vecs > 64)
+		max_vecs = 64;
+	if (max_vecs < 1)
+		max_vecs = 1;
+	return max_vecs;
+}
+
 typedef struct IvfflatPackedChunkData
 {
 	uint16		count;			/* Number of vectors in this chunk */
@@ -365,6 +405,7 @@ typedef struct IvfflatScanList
 }			IvfflatScanList;
 
 typedef void (*VectorPackedBatchDistFunc_InPlace) (int dim, const float *q, const float *packed_values, double *distances, int count);
+typedef void (*VectorAoSoABatchDistFunc_InPlace) (int dim, const float *q, const float *aosoa_values, double *distances, int count);
 
 typedef struct IvfflatScanOpaqueData
 {
@@ -391,6 +432,7 @@ typedef struct IvfflatScanOpaqueData
 	VectorBatchDistFunc batchdistfunc;
 	VectorSoABatchDistFunc_InPlace soa_inplace_distfunc;
 	VectorPackedBatchDistFunc_InPlace packed_inplace_distfunc;
+	VectorAoSoABatchDistFunc_InPlace aosoa_inplace_distfunc;
 
 	/* Lists */
 	pairingheap *listQueue;

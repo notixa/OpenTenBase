@@ -52,6 +52,10 @@ void VectorBatchL2SquaredDistance_Packed_InPlace(int dim, const float *q, const 
 void VectorBatchNegativeInnerProduct_Packed_InPlace(int dim, const float *q, const float *packed_values, double *distances, int count);
 void *VectorGetPackedBatchDistFunc_InPlace(PGFunction fn);
 
+void VectorBatchL2SquaredDistance_AoSoA_InPlace(int dim, const float *q, const float *aosoa_values, double *distances, int count);
+void VectorBatchNegativeInnerProduct_AoSoA_InPlace(int dim, const float *q, const float *aosoa_values, double *distances, int count);
+void *VectorGetAoSoABatchDistFunc_InPlace(PGFunction fn);
+
 /* TODO Move to better place */
 #if PG_VERSION_NUM >= 160000
 #define FUNCTION_PREFIX

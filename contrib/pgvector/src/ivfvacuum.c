@@ -92,12 +92,12 @@ ivfflatbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 				if (is_soa)
 				{
-					/* Find deleted tuples in Packed AoS chunks */
+					/* Find deleted tuples in AoSoA chunks */
 					for (offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
 					{
-						IvfflatPackedChunk chunk = (IvfflatPackedChunk) PageGetItem(page, PageGetItemId(page, offno));
-						ItemPointer tids = IvfflatPackedChunkGetTids(chunk);
-						float	   *values = IvfflatPackedChunkGetValues(chunk);
+						IvfflatAoSoAChunk chunk = (IvfflatAoSoAChunk) PageGetItem(page, PageGetItemId(page, offno));
+						ItemPointer tids = IvfflatAoSoAChunkGetTids(chunk);
+						float	   *values = IvfflatAoSoAChunkGetValues(chunk);
 						int			count = chunk->count;
 						int			dim = chunk->dim;
 						int			kept = 0;
@@ -125,26 +125,72 @@ ivfflatbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 							}
 							else
 							{
-								Size		new_chunksz = IvfflatPackedChunkSize(kept, dim);
-								IvfflatPackedChunk new_chunk = (IvfflatPackedChunk) palloc0(new_chunksz);
+								Size		new_chunksz = IvfflatAoSoAChunkSize(kept, dim);
+								IvfflatAoSoAChunk new_chunk = (IvfflatAoSoAChunk) palloc0(new_chunksz);
 								ItemPointer new_tids;
 								float	   *new_values;
+								int			old_full = count / 8;
+								int			old_rem = count % 8;
+								int			new_full = kept / 8;
+								int			new_rem = kept % 8;
+								float	   *surviving_vecs = (float *) palloc(kept * dim * sizeof(float));
 								int			cur = 0;
 
 								new_chunk->count = (uint16) kept;
 								new_chunk->dim = (uint16) dim;
-								new_tids = IvfflatPackedChunkGetTids(new_chunk);
-								new_values = IvfflatPackedChunkGetValues(new_chunk);
+								new_tids = IvfflatAoSoAChunkGetTids(new_chunk);
+								new_values = IvfflatAoSoAChunkGetValues(new_chunk);
 
+								/* Unpack surviving vectors */
 								for (int j = 0; j < count; j++)
 								{
 									if (!callback(&tids[j], callback_state))
 									{
+										int tile_idx = j / 8;
+										int in_tile = j % 8;
+										float *dst = surviving_vecs + cur * dim;
+
 										new_tids[cur] = tids[j];
-										memcpy(new_values + cur * dim, values + j * dim, dim * sizeof(float));
+										if (tile_idx < old_full)
+										{
+											const float *tile = values + tile_idx * (8 * dim);
+											for (int d = 0; d < dim; d++)
+												dst[d] = tile[d * 8 + in_tile];
+										}
+										else
+										{
+											const float *rem_tile = values + old_full * (8 * dim);
+											for (int d = 0; d < dim; d++)
+												dst[d] = rem_tile[d * old_rem + in_tile];
+										}
 										cur++;
 									}
 								}
+
+								/* Repack surviving vectors into AoSoA */
+								for (int t = 0; t < new_full; t++)
+								{
+									float *tile = new_values + t * (8 * dim);
+									for (int j = 0; j < 8; j++)
+									{
+										int vec_idx = t * 8 + j;
+										const float *src = surviving_vecs + vec_idx * dim;
+										for (int d = 0; d < dim; d++)
+											tile[d * 8 + j] = src[d];
+									}
+								}
+								if (new_rem > 0)
+								{
+									float *rem_tile = new_values + new_full * (8 * dim);
+									for (int j = 0; j < new_rem; j++)
+									{
+										int vec_idx = new_full * 8 + j;
+										const float *src = surviving_vecs + vec_idx * dim;
+										for (int d = 0; d < dim; d++)
+											rem_tile[d * new_rem + j] = src[d];
+									}
+								}
+								pfree(surviving_vecs);
 
 								PageIndexTupleDelete(page, offno);
 								PageAddItem(page, (Item) new_chunk, new_chunksz, offno, false, false);
