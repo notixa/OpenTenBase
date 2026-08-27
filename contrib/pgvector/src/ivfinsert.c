@@ -86,7 +86,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 	Vector	   *vec = NULL;
 	IndexTuple	itup = NULL;
 	Size		itemsz = 0;
-	bool		is_soa = (IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC) == NULL);
+	bool		is_aosoa = (IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC) == NULL);
 
 	/* Detoast once for all calls */
 	value = PointerGetDatum(PG_DETOAST_DATUM(values[0]));
@@ -111,7 +111,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 	Assert(BlockNumberIsValid(insertPage));
 	originalInsertPage = insertPage;
 
-	if (is_soa)
+	if (is_aosoa)
 	{
 		vec = DatumGetVector(value);
 		max_vecs = IvfflatMaxAoSoAVecsPerPage(dimensions);
@@ -135,7 +135,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 		if (PageIsEmpty(page))
 			break;
 
-		if (is_soa)
+		if (is_aosoa)
 		{
 			IvfflatAoSoAChunk old_chunk = (IvfflatAoSoAChunk) PageGetItem(page, PageGetItemId(page, FirstOffsetNumber));
 
@@ -191,7 +191,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
 	}
 
 	/* Add to next offset */
-	if (is_soa)
+	if (is_aosoa)
 	{
 		if (PageIsEmpty(page))
 		{

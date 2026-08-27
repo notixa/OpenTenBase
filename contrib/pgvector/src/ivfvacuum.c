@@ -70,7 +70,7 @@ ivfflatbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				OffsetNumber maxoffno;
 				OffsetNumber deletable[MaxOffsetNumber];
 				int			ndeletable;
-				bool		is_soa = (IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC) == NULL);
+				bool		is_aosoa = (IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC) == NULL);
 
 				vacuum_delay_point();
 
@@ -90,7 +90,7 @@ ivfflatbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				maxoffno = PageGetMaxOffsetNumber(page);
 				ndeletable = 0;
 
-				if (is_soa)
+				if (is_aosoa)
 				{
 					/* Find deleted tuples in AoSoA chunks */
 					for (offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))

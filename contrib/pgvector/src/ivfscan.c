@@ -211,14 +211,14 @@ GetScanItems(IndexScanDesc scan, Datum value)
 			Buffer		buf;
 			Page		page;
 			OffsetNumber maxoffno;
-			bool		is_soa = (IvfflatOptionalProcInfo(scan->indexRelation, IVFFLAT_TYPE_INFO_PROC) == NULL);
+			bool		is_aosoa = (IvfflatOptionalProcInfo(scan->indexRelation, IVFFLAT_TYPE_INFO_PROC) == NULL);
 
 			buf = ReadBufferExtended(scan->indexRelation, MAIN_FORKNUM, searchPage, RBM_NORMAL, so->bas);
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
 			page = BufferGetPage(buf);
 			maxoffno = PageGetMaxOffsetNumber(page);
 
-			if (is_soa)
+			if (is_aosoa)
 			{
 				for (OffsetNumber offno = FirstOffsetNumber; offno <= maxoffno; offno = OffsetNumberNext(offno))
 				{
@@ -423,9 +423,6 @@ ivfflatbeginscan(Relation index, int nkeys, int norderbys)
 	so->procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
 	so->normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
 	so->collation = index->rd_indcollation[0];
-	so->batchdistfunc = VectorGetBatchDistFunc(so->procinfo->fn_addr);
-	so->soa_inplace_distfunc = VectorGetSoABatchDistFunc_InPlace(so->procinfo->fn_addr);
-	so->packed_inplace_distfunc = (VectorPackedBatchDistFunc_InPlace) VectorGetPackedBatchDistFunc_InPlace(so->procinfo->fn_addr);
 	so->aosoa_inplace_distfunc = (VectorAoSoABatchDistFunc_InPlace) VectorGetAoSoABatchDistFunc_InPlace(so->procinfo->fn_addr);
 
 	so->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
